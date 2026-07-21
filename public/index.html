@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Hard guarantee of "no network": only same-origin (the local server) is allowed. -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+<title>Gandalf</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📖</text></svg>">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header id="topbar">
+  <div class="topbar-inner">
+    <span id="wordmark">📖 gandalf</span>
+    <span id="repo-info"></span>
+    <span class="spacer"></span>
+    <select id="baseline-select" title="What to diff the working tree against" hidden></select>
+    <details id="settings">
+      <summary title="Settings" aria-label="Settings"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></summary>
+      <div class="settings-panel">
+        <label for="mono-font-input">Code font</label>
+        <input id="mono-font-input" type="text" placeholder="e.g. Natasha II" spellcheck="false" autocomplete="off">
+        <p class="settings-hint">Used for diffs on this machine. If the font isn't installed, the system monospace is used.</p>
+        <label class="settings-check"><input type="checkbox" id="ws-toggle"> Ignore whitespace changes</label>
+        <p class="settings-hint">Whitespace-only changes are hidden and hunk staging is disabled while on.</p>
+      </div>
+    </details>
+    <button id="btn-collapse-all" class="ghost" title="Collapse every file">Collapse all</button>
+    <button id="btn-expand-all" class="ghost" title="Expand every file">Expand all</button>
+    <button id="btn-refresh" class="ghost" title="Re-read the diff from the working tree">Refresh</button>
+    <button id="btn-submit" disabled>Finish review</button>
+  </div>
+</header>
+
+<div id="stale" hidden>
+  <span>Working tree changed — this diff is out of date.</span>
+  <button id="btn-stale-refresh">Refresh</button>
+</div>
+
+<main>
+  <div id="banner" hidden></div>
+  <section id="history" hidden>
+    <h2 id="history-heading">Audit trail</h2>
+    <div id="history-list"></div>
+  </section>
+  <section id="files"></section>
+  <div id="empty-state" hidden>
+    <p>No changes between the working tree and the base ref.</p>
+  </div>
+</main>
+
+<dialog id="finish-dialog">
+  <h2>Finish review</h2>
+  <p class="dialog-sub" id="finish-dialog-sub"></p>
+  <label class="dialog-label" for="finish-overall">Overall comment
+    <span class="muted">— optional; leads the feedback</span></label>
+  <textarea id="finish-overall" placeholder="Summarize the review as a whole…" spellcheck="true"></textarea>
+  <div class="dialog-actions">
+    <span class="form-hint">⌘⏎ finish · esc keeps the text for later</span>
+    <button id="btn-finish-confirm" class="primary">Finish review</button>
+    <button id="btn-finish-cancel">Cancel</button>
+  </div>
+</dialog>
+
+<dialog id="review-dialog">
+  <h2 id="review-dialog-title">Review finished</h2>
+  <p class="dialog-sub">Paste this to the agent making your changes — it explains
+    itself. Also saved to <code>.gandalf/pending-review.md</code>.</p>
+  <pre id="review-dialog-md"></pre>
+  <div class="dialog-actions">
+    <button id="btn-copy-feedback" class="primary">Copy feedback</button>
+    <button id="btn-review-dialog-close">Close</button>
+  </div>
+</dialog>
+
+<div id="toast" hidden></div>
+<script src="/highlight.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

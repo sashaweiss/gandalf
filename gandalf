@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""Launcher so `gandalf` can sit on your PATH (a symlink works fine):
+
+    ln -s /path/to/gandalf/gandalf ~/.local/bin/gandalf
+
+It resolves symlinks to find the real tool directory, then runs server.py.
+"""
+import pathlib
+import runpy
+
+runpy.run_path(
+    str(pathlib.Path(__file__).resolve().parent / "server.py"),
+    run_name="__main__",
+)
