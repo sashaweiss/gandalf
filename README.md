@@ -22,7 +22,8 @@ Options:
 - `--repo PATH`: repository to review (default: the git repo containing the cwd)
 - `--base REF`: what to diff the working tree against. Default: `HEAD`.
 - `--state-dir DIR`: where review state lives. Default: `<repo>/.gandalf`.
-- `--port N`: default `4633`.
+- `--port N`: default `4633`, or the next free port after it — so parallel
+  sessions just work. An explicit `--port` fails rather than moving the URL.
 - `--no-open`: don't open the browser on startup.
 
 ## Reviewing

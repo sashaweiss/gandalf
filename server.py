@@ -1134,7 +1134,9 @@ def main():
                     help="ref to diff the working tree against (default: HEAD)")
     ap.add_argument("--state-dir", default=None,
                     help="where review state lives (default: <repo root>/.gandalf)")
-    ap.add_argument("--port", type=int, default=4633)
+    ap.add_argument("--port", type=int, default=None,
+                    help="port to bind (default: 4633, or the next free port "
+                         "after it so parallel sessions just work)")
     ap.add_argument("--no-open", action="store_true",
                     help="don't open the review UI in a browser on startup")
     args = ap.parse_args()
@@ -1167,8 +1169,27 @@ def main():
         pass  # state dir is outside the repo; nothing to exclude
 
     handler = make_handler(repo, args.base, state_root, excludes, skip_prefixes)
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), handler)
-    url = f"http://127.0.0.1:{args.port}"
+    if args.port is not None:
+        # An explicit port is a promise: fail loudly rather than move the URL.
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", args.port), handler)
+        except OSError as e:
+            print(f"error: cannot bind port {args.port}: {e}", file=sys.stderr)
+            raise SystemExit(1)
+    else:
+        server = None
+        port = 4633
+        for candidate in range(port, port + 50):
+            try:
+                server = ThreadingHTTPServer(("127.0.0.1", candidate), handler)
+                break
+            except OSError:
+                continue  # in use (likely another gandalf); try the next one
+        if server is None:
+            print(f"error: no free port in {port}–{port + 49}; use --port",
+                  file=sys.stderr)
+            raise SystemExit(1)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
     print(f"gandalf: reviewing {repo} (base: {args.base})")
     print(f"gandalf: state in   {state_root}")
     print(f"gandalf: {url}")
