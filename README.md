@@ -1,5 +1,7 @@
 # gandalf 📖
 
+> "this code shall eventually pass"
+
 A local-only, zero-dependency "code review" tool designed for working alongside an AI agent.
 
 Review and comment on uncommitted changes (made by an agent) in a browser-based UI powered by a local Python server. Submitting a review provides you with a self-describing markdown summary of your comments, ready to be handed back to the agent.
