@@ -114,6 +114,15 @@ review can show only what changed since.
 - Hover **+** on a line, or drag across lines, to comment on a line/block.
   `⌘⏎` saves, `esc` cancels. Drafts autosave (debounced POST) and survive
   reloads.
+- **Half-written comments are never lost implicitly** (`stashForm`): when an
+  open form would be replaced — opening another comment, clicking Edit
+  elsewhere, marking the file Viewed, Refresh/view switches, or opening the
+  Finish dialog — non-empty text is stashed as a draft marked `wip`
+  (dashed box, "unfinished — Edit to continue"; while editing an existing
+  comment, its text is updated and flagged instead). Edit resumes; a real
+  save clears the flag. Explicit `esc`/Cancel still discards. The Finish
+  dialog warns "N unfinished drafts will be included as-is"; the markdown
+  treats them as normal comments.
 - Overlapping and duplicate ranges are allowed. When several comments end on
   the same line, the widest range renders first, then oldest.
 - **File-level comments**: the **Comment** button in a file header. Rendered

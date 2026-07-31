@@ -204,12 +204,14 @@ function commentBoxHtml(c, readOnly) {
   let note = '';
   if (c.detached) {
     note = '<span class="cnote warn">⚠ the quoted code changed since this was drafted</span>';
+  } else if (c.wip && !readOnly) {
+    note = '<span class="cnote wip-note">unfinished — Edit to continue</span>';
   } else if (c.origStart != null && c.startLine !== c.origStart) {
     note = `<span class="cnote">followed code from line ${c.origStart}</span>`;
   }
   const excerpt = c.detached && c.excerpt && c.excerpt.length
     ? `<pre class="cexcerpt">${esc(c.excerpt.join('\n'))}</pre>` : '';
-  return `<div class="comment-box${readOnly ? ' submitted' : ''}${c.detached ? ' detached' : ''}">
+  return `<div class="comment-box${readOnly ? ' submitted' : ''}${c.detached ? ' detached' : ''}${c.wip && !readOnly ? ' wip' : ''}">
     <div class="chead"><span class="range">${esc(rangeLabel(c))}</span>${note}${actions}</div>
     ${excerpt}
     <div class="cbody">${esc(c.text)}</div>
@@ -522,12 +524,18 @@ function upsertOverallDraft(text) {
 }
 
 function openFinishDialog() {
+  stashAllForms(); // half-written comments join the review as unfinished drafts
+  renderFiles();
   const others = drafts.filter((c) => !c.reviewLevel);
   const files = new Set(others.map((c) => c.file)).size;
-  $('#finish-dialog-sub').textContent = others.length
+  const wip = others.filter((c) => c.wip).length;
+  const wipNote = wip
+    ? ` ${wip} unfinished draft${wip === 1 ? '' : 's'} will be included as-is.` : '';
+  $('#finish-dialog-sub').textContent = (others.length
     ? `${others.length} comment${others.length === 1 ? '' : 's'} on `
       + `${files} file${files === 1 ? '' : 's'}, plus whatever you write below.`
-    : 'No file or line comments — the overall comment will be the whole review.';
+    : 'No file or line comments — the overall comment will be the whole review.')
+    + wipNote;
   const ta = $('#finish-overall');
   ta.value = reviewLevelDrafts().map((c) => c.text).join('\n\n');
   $('#finish-dialog').showModal();
@@ -596,6 +604,7 @@ async function loadRevision(details, n) {
 /* -------------------------------------------------------- comment editing */
 
 function openForm(path, startDi, endDi) {
+  stashForm(path);
   const file = review.files.find((f) => f.path === path);
   const ui = getUI(path);
   const rows = buildRows(file, ui).filter((r) => r.kind === 'line' && r.di >= startDi && r.di <= endDi);
@@ -614,7 +623,48 @@ function openForm(path, startDi, endDi) {
   renderFile(path);
 }
 
+// Never lose typed text: stash an open form's state before anything replaces
+// it. Non-empty text becomes (or updates) a draft marked unfinished (`wip`);
+// the reviewer resumes via Edit, and a real save clears the marker. Explicit
+// Cancel/esc still discards — this guards the implicit paths only (opening
+// another comment, marking Viewed, Refresh, finishing).
+function stashForm(path) {
+  const ui = getUI(path);
+  const f = ui.form;
+  if (!f) return;
+  const text = (ui.formText || '').trim();
+  ui.form = null;
+  ui.formText = '';
+  if (!text) return; // nothing typed, nothing to keep
+  if (f.editingId) {
+    const c = drafts.find((c) => c.id === f.editingId);
+    if (c && c.text !== text) {
+      c.text = text;
+      c.wip = true;
+      scheduleDraftSave();
+    }
+    return;
+  }
+  const c = { id: genId(), file: path, text, wip: true, createdAt: new Date().toISOString() };
+  if (f.fileLevel) {
+    c.fileLevel = true;
+  } else {
+    Object.assign(c, {
+      side: f.side, baseline: f.baseline ?? null,
+      startLine: f.startLine, endLine: f.endLine,
+      origStart: f.startLine, excerpt: f.excerpt,
+    });
+  }
+  drafts.push(c);
+  scheduleDraftSave();
+}
+
+function stashAllForms() {
+  for (const path of fileUI.keys()) stashForm(path);
+}
+
 function openFileForm(path) {
+  stashForm(path);
   const ui = getUI(path);
   ui.collapsed = false; // the form lives in the body
   ui.form = { fileLevel: true };
@@ -630,7 +680,10 @@ function saveForm(path) {
   if (!text) { toast('Comment is empty.'); return; }
   if (f.editingId) {
     const c = drafts.find((c) => c.id === f.editingId);
-    if (c) c.text = text;
+    if (c) {
+      c.text = text;
+      delete c.wip; // explicitly saved: no longer unfinished
+    }
   } else if (f.fileLevel) {
     drafts.push({
       id: genId(),
@@ -776,6 +829,7 @@ function wireEvents() {
         scheduleDraftSave();
         renderFile(path);
       } else {
+        stashForm(path);
         const c = drafts.find((c) => c.id === id);
         if (!c) return;
         const ui = getUI(path);
@@ -804,9 +858,8 @@ function wireEvents() {
     file.viewed = on;
     ui.collapsed = on;
     if (on) {
+      stashForm(path); // keep any half-written comment as an unfinished draft
       ui.expansions = {}; // marking viewed resets any expanded context
-      ui.form = null;
-      ui.formText = '';
     }
     renderFile(path);
     // Persisted per branch; the server drops it if the file's diff changes.
@@ -982,6 +1035,10 @@ async function submitReview() {
 
 async function load(isRefresh) {
   try {
+    // A refresh rebuilds all file UI; stash open forms (and settle the
+    // save) first so the refetched drafts include them.
+    stashAllForms();
+    await flushDrafts();
     let data;
     try {
       data = await fetchReview();

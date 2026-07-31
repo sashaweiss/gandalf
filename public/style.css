@@ -532,6 +532,8 @@ tr.crow > td { padding: 6px 8px 6px 46px; background: var(--panel); }
 .comment-box .cbody { white-space: pre-wrap; }
 .comment-box.submitted { border-style: dashed; }
 .comment-box.detached { border-color: var(--danger); }
+.comment-box.wip { border-style: dashed; }
+.comment-box .cnote.wip-note { color: var(--accent); }
 .comment-box .cnote { font-style: italic; }
 .comment-box .cnote.warn { color: var(--danger); font-style: normal; }
 .comment-box .cexcerpt {
