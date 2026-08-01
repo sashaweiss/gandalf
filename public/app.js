@@ -534,7 +534,8 @@ function openFinishDialog() {
   $('#finish-dialog-sub').textContent = (others.length
     ? `${others.length} comment${others.length === 1 ? '' : 's'} on `
       + `${files} file${files === 1 ? '' : 's'}, plus whatever you write below.`
-    : 'No file or line comments — the overall comment will be the whole review.')
+    : 'No comments — finishing approves the changes as-is and checkpoints '
+      + 'the review. Add an overall note below if you like.')
     + wipNote;
   const ta = $('#finish-overall');
   ta.value = reviewLevelDrafts().map((c) => c.text).join('\n\n');
@@ -558,7 +559,9 @@ function renderHistory() {
     const when = new Date(meta.submittedAt).toLocaleString();
     d.innerHTML = `<summary>
       <span class="rev-title">Review r${meta.revision}</span>
-      <span class="muted">${esc(when)} · ${meta.commentCount} comment${meta.commentCount === 1 ? '' : 's'} · head ${esc(meta.head)}</span>
+      <span class="muted">${esc(when)} · ${meta.commentCount
+        ? `${meta.commentCount} comment${meta.commentCount === 1 ? '' : 's'}`
+        : 'approved — no comments'} · head ${esc(meta.head)}</span>
       <span class="spacer"></span>
       <button class="plain-link" data-rcopy="${meta.revision}" title="Copy this review as text to paste to an agent">Copy for agent</button>
     </summary><div class="rev-body"><div class="rev-note">Loading…</div></div>`;
@@ -1011,7 +1014,6 @@ function openReviewDialog(revision, markdown) {
 
 async function submitReview() {
   upsertOverallDraft($('#finish-overall').value);
-  if (!drafts.length) { toast('Nothing to submit — leave a comment first.'); return; }
   $('#finish-dialog').close();
   const btn = $('#btn-submit');
   btn.disabled = true;

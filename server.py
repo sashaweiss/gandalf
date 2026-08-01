@@ -719,6 +719,19 @@ def render_review_markdown(snapshot):
     base_ref = snapshot.get("base") or "HEAD"
     base_desc = "the last commit (HEAD)" if base_ref == "HEAD" \
         else f"the base ref `{base_ref}`"
+    if not snapshot.get("comments"):
+        # A commentless review is an approval: the reviewer checkpointed the
+        # changes as good. Say so plainly — an agent reading the handoff
+        # file should know there is nothing to act on.
+        return (
+            "# Code review — approved, nothing to address\n"
+            "\n"
+            f"Review r{snapshot['revision']} of the uncommitted working-tree "
+            f"changes in this repository (branch `{snapshot['branch']}`, "
+            f"HEAD {snapshot['head']}, submitted {snapshot['submittedAt']}) "
+            "was finished with no comments: the reviewer approved these "
+            "changes as-is. No action is needed.\n"
+        )
     lines = [
         "# Code review — please address each comment",
         "",
@@ -1029,8 +1042,9 @@ def make_handler(repo, base, state_root, excludes, skip_prefixes):
         def api_submit(self):
             payload = self.read_body_json()
             comments = payload.get("comments")
-            if not isinstance(comments, list) or not comments:
-                return self.send_error_json("no comments to submit", 400)
+            # An empty list is a valid review: it approves the changes.
+            if not isinstance(comments, list):
+                return self.send_error_json("expected {comments: [...]}", 400)
             branch = current_branch(repo)
             # Freeze the diff the way the reviewer saw it (ignore-whitespace
             # is cosmetic; comments carry their own excerpts either way).

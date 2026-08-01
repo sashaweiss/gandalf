@@ -134,6 +134,12 @@ review can show only what changed since.
   text survives reloads and failed submits. Leads the markdown as an
   `## Overall` section. A review may consist of only an overall comment —
   the Finish button is never disabled.
+- **A review with no comments at all is an approval**: confirming an empty
+  Finish dialog checkpoints the review ("all these changes are good for
+  now"). It gets a revision + snapshot like any review (so the baseline
+  advances), the audit trail shows "approved — no comments", and the
+  markdown/`pending-review.md` says plainly that the changes were approved
+  and no action is needed.
 
 ### Draft anchoring (the predictable rule)
 
