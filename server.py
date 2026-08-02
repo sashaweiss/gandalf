@@ -606,8 +606,8 @@ def reanchor_drafts(repo, files, drafts, baseline=None):
     file_cache = {}
     changed = False
     for c in drafts:
-        if c.get("fileLevel") or c.get("reviewLevel"):
-            continue  # no lines to follow; these never move or detach
+        if c.get("fileLevel") or c.get("reviewLevel") or c.get("parentId"):
+            continue  # no lines of their own; replies follow their thread root
         before = (c.get("detached"), c.get("startLine"), c.get("endLine"))
         if c.get("side") == "old":
             if (c.get("baseline") or None) != baseline:
@@ -760,9 +760,22 @@ def render_review_markdown(snapshot):
         for c in overall:
             lines.append((c.get("text") or "").rstrip())
             lines.append("")
+    # Replies render as additional paragraphs of their thread root's entry.
+    replies = {}
+    for c in snapshot.get("comments", []):
+        if c.get("parentId"):
+            replies.setdefault(c["parentId"], []).append(c)
+    for arr in replies.values():
+        arr.sort(key=lambda c: str(c.get("createdAt") or ""))
+
+    def entry_text(c):
+        texts = [(c.get("text") or "").rstrip()]
+        texts += [(r.get("text") or "").rstrip() for r in replies.get(c.get("id"), [])]
+        return "\n\n".join(t for t in texts if t)
+
     by_file = {}
     for c in snapshot.get("comments", []):
-        if c.get("reviewLevel"):
+        if c.get("reviewLevel") or c.get("parentId"):
             continue
         by_file.setdefault(c.get("file") or "(unknown file)", []).append(c)
     for path in sorted(by_file):
@@ -773,7 +786,7 @@ def render_review_markdown(snapshot):
             if c.get("fileLevel"):
                 lines.append("**File comment**")
                 lines.append("")
-                lines.append((c.get("text") or "").rstrip())
+                lines.append(entry_text(c))
                 lines.append("")
                 continue
             start, end = c.get("startLine"), c.get("endLine")
@@ -796,7 +809,7 @@ def render_review_markdown(snapshot):
                 lines.append(f"> {ex}")
             if c.get("excerpt"):
                 lines.append("")
-            lines.append((c.get("text") or "").rstrip())
+            lines.append(entry_text(c))
             lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 

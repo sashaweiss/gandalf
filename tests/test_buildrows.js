@@ -138,6 +138,16 @@ check('file-level comment not anchored',
 check('file-level comment not in coverage',
   ctx.coverageSet(withFile, null).size === cov.size);
 check('labels', ctx.rangeLabel({ fileLevel: true }) === 'file comment'
-  && ctx.rangeLabel({ reviewLevel: true }) === 'review comment');
+  && ctx.rangeLabel({ reviewLevel: true }) === 'review comment'
+  && ctx.rangeLabel({ parentId: 'x' }) === 'reply');
+
+// 11. replies never anchor or cover; they render inside their parent's thread
+const withReply = comments.concat([{ id: 'r', parentId: 'a', text: 'follow-up' }]);
+check('reply not anchored',
+  ![...ctx.commentsByAnchor(withReply, null).values()].flat().some((c) => c.id === 'r'));
+check('reply not in coverage', ctx.coverageSet(withReply, null).size === cov.size);
+const thread = ctx.threadHtml(withReply[0], withReply, { form: null }, false);
+check('thread contains root and reply text',
+  thread.includes('follow-up') && thread.includes('Reply'));
 
 process.exit(failures ? 1 : 0);

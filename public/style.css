@@ -534,6 +534,27 @@ tr.crow > td { padding: 6px 8px 6px 46px; background: var(--panel); }
 .comment-box.detached { border-color: var(--danger); }
 .comment-box.wip { border-style: dashed; }
 .comment-box .cnote.wip-note { color: var(--accent); }
+
+/* A thread: root comment, replies, and the Reply footer share one outline. */
+.thread { max-width: 860px; }
+.thread > .comment-box { max-width: none; }
+.thread > * + * { margin-top: 0; border-top: none; }
+.thread > :not(:last-child) { border-bottom: none; }
+.thread > .comment-box:not(:first-child) { border-top: 1px dashed var(--comment-border); }
+.thread > * { border-radius: 0; } /* middle entries: square corners */
+/* Entries sitting on a divider (or the Reply strip) get breathing room. */
+.thread > .comment-box:not(:last-child) { padding-bottom: 12px; }
+.thread > :first-child { border-radius: 6px 6px 0 0; }
+.thread > :last-child { border-radius: 0 0 6px 6px; }
+.thread > :only-child { border-radius: 6px; }
+/* The Reply strip reads as a control bar, not another entry: divided from
+   the last comment and washed toward the page background. */
+.thread-foot {
+  border: 1px solid var(--comment-border);
+  border-top: 1px dashed var(--comment-border);
+  background: color-mix(in srgb, var(--comment-bg) 35%, var(--bg));
+  padding: 3px 6px;
+}
 .comment-box .cnote { font-style: italic; }
 .comment-box .cnote.warn { color: var(--danger); font-style: normal; }
 .comment-box .cexcerpt {

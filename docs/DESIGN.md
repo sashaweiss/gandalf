@@ -33,8 +33,8 @@ review can show only what changed since.
 - **State lives at `<repo root>/.gandalf/`** regardless of launch directory
   (`--state-dir` overrides). Local-only, never committed; `.gandalf` is
   excluded from the review diff.
-- Comments are **flat** — no reply threads. Overlapping/duplicate ranges are
-  allowed.
+- Comments form **single-level threads**: replies attach to a thread root,
+  never to another reply. Overlapping/duplicate ranges are allowed.
 - The user runs the tool on macOS and reviews in **Firefox**; keep changes
   Firefox-compatible (e.g. the `ClipboardItem`-promise copy pattern).
 
@@ -125,6 +125,15 @@ review can show only what changed since.
   treats them as normal comments.
 - Overlapping and duplicate ranges are allowed. When several comments end on
   the same line, the widest range renders first, then oldest.
+- **Threads** (single-level, since 2026-08-01 — supersedes the original
+  "flat comments" rule): every line/file comment has a **Reply** footer;
+  replies are drafts with `parentId` pointing at the thread root, carry no
+  anchor of their own (they follow the root everywhere — anchor moves,
+  detachment, orphan bucket, other views), and stack under the root in one
+  outlined container, oldest first. Deleting the root deletes its replies;
+  deleting a reply removes just that reply. In the markdown, replies render
+  as additional paragraphs of the root's entry — same line block, createdAt
+  order. Review-level (overall) comments have no replies.
 - **File-level comments**: the **Comment** button in a file header. Rendered
   in a strip above the diff; works for binary files. `fileLevel: true`,
   no line anchoring ever.

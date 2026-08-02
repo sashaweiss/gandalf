@@ -166,6 +166,7 @@ function commentsByAnchor(comments, viewBaseline) {
   const m = new Map();
   for (const c of comments) {
     if (c.fileLevel) continue; // rendered at the top of the file card
+    if (c.parentId) continue;  // replies render inside their parent's thread
     if (c.detached || !inView(c, viewBaseline)) continue; // both render in the bottom bucket
     const k = c.side + ':' + c.endLine;
     if (!m.has(k)) m.set(k, []);
@@ -183,13 +184,14 @@ function commentsByAnchor(comments, viewBaseline) {
 function coverageSet(comments, viewBaseline) {
   const s = new Set();
   for (const c of comments) {
-    if (c.fileLevel || c.detached || !inView(c, viewBaseline)) continue;
+    if (c.fileLevel || c.parentId || c.detached || !inView(c, viewBaseline)) continue;
     for (let n = c.startLine; n <= c.endLine; n++) s.add(c.side + ':' + n);
   }
   return s;
 }
 
 function rangeLabel(c) {
+  if (c.parentId || c.replyTo) return 'reply';
   if (c.reviewLevel) return 'review comment';
   if (c.fileLevel) return 'file comment';
   const r = c.startLine === c.endLine ? 'line ' + c.startLine : 'lines ' + c.startLine + '–' + c.endLine;
@@ -220,8 +222,10 @@ function commentBoxHtml(c, readOnly) {
 
 function formBoxHtml(ui) {
   const f = ui.form;
+  const kind = f.replyTo ? 'Reply' : f.editingId ? 'Edit comment' : 'New comment';
+  const label = f.replyTo ? kind : `${kind} · ${esc(rangeLabel(f))}`;
   return `<div class="comment-box form">
-    <div class="chead"><span class="range">${f.editingId ? 'Edit comment' : 'New comment'} · ${esc(rangeLabel(f))}</span></div>
+    <div class="chead"><span class="range">${label}</span></div>
     <textarea class="cform-text" placeholder="Leave a comment…">${esc(ui.formText || '')}</textarea>
     <div class="form-actions">
       <button class="primary" data-fact="save">Save</button>
@@ -229,6 +233,25 @@ function formBoxHtml(ui) {
       <span class="form-hint">⌘⏎ save · esc cancel</span>
     </div>
   </div>`;
+}
+
+// A comment plus its replies (single-level; replies always point at the
+// thread root and inherit its anchor). The entry being edited — root or
+// reply — swaps for the form in place; the footer offers Reply or holds the
+// open reply form.
+function threadHtml(c, comments, ui, readOnly) {
+  const replies = comments
+    .filter((r) => r.parentId === c.id)
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  const entry = (e) => (!readOnly && ui.form && ui.form.editingId === e.id)
+    ? formBoxHtml(ui) : commentBoxHtml(e, readOnly);
+  const parts = [entry(c), ...replies.map(entry)];
+  if (!readOnly && ui.form && ui.form.replyTo === c.id) {
+    parts.push(formBoxHtml(ui));
+  } else if (!readOnly) {
+    parts.push(`<div class="thread-foot"><button class="plain-link" data-reply="${esc(c.id)}">Reply</button></div>`);
+  }
+  return `<div class="thread">${parts.join('')}</div>`;
 }
 
 // highlight.js is a separate script; guarded so the headless test harness can
@@ -368,8 +391,7 @@ function buildFileSection(file, comments, ui, opts) {
     // File-level comments sit above the diff; they have no lines to anchor to.
     const strip = [];
     for (const c of comments.filter((c) => c.fileLevel)) {
-      strip.push((!readOnly && ui.form && ui.form.editingId === c.id)
-        ? formBoxHtml(ui) : commentBoxHtml(c, readOnly));
+      strip.push(threadHtml(c, comments, ui, readOnly));
     }
     if (!readOnly && ui.form && ui.form.fileLevel && !ui.form.editingId) {
       strip.push(formBoxHtml(ui));
@@ -399,9 +421,7 @@ function buildFileSection(file, comments, ui, opts) {
           for (const c of anchors.get(side + ':' + num) || []) {
             if (rendered.has(c.id)) continue;
             rendered.add(c.id);
-            const inner = (!readOnly && ui.form && ui.form.editingId === c.id)
-              ? formBoxHtml(ui) : commentBoxHtml(c, readOnly);
-            parts.push(`<tr class="crow"><td colspan="5">${inner}</td></tr>`);
+            parts.push(`<tr class="crow"><td colspan="5">${threadHtml(c, comments, ui, readOnly)}</td></tr>`);
           }
         }
         if (!readOnly && ui.form && !ui.form.editingId && ui.form.endDi === r.di) {
@@ -409,13 +429,11 @@ function buildFileSection(file, comments, ui, opts) {
         }
       }
       parts.push('</tbody></table></div>');
-      const orphans = comments.filter((c) => !c.fileLevel && !rendered.has(c.id));
+      const orphans = comments.filter((c) => !c.fileLevel && !c.parentId && !rendered.has(c.id));
       if (orphans.length) {
         parts.push('<div class="orphan-note">Comments not attached to visible lines:</div>');
         for (const c of orphans) {
-          const inner = (!readOnly && ui.form && ui.form.editingId === c.id)
-            ? formBoxHtml(ui) : commentBoxHtml(c, readOnly);
-          parts.push(`<div class="orphan-comment">${inner}</div>`);
+          parts.push(`<div class="orphan-comment">${threadHtml(c, comments, ui, readOnly)}</div>`);
         }
       }
     }
@@ -651,6 +669,8 @@ function stashForm(path) {
   const c = { id: genId(), file: path, text, wip: true, createdAt: new Date().toISOString() };
   if (f.fileLevel) {
     c.fileLevel = true;
+  } else if (f.replyTo) {
+    c.parentId = f.replyTo;
   } else {
     Object.assign(c, {
       side: f.side, baseline: f.baseline ?? null,
@@ -692,6 +712,14 @@ function saveForm(path) {
       id: genId(),
       file: path,
       fileLevel: true,
+      text,
+      createdAt: new Date().toISOString(),
+    });
+  } else if (f.replyTo) {
+    drafts.push({
+      id: genId(),
+      file: path,
+      parentId: f.replyTo,
       text,
       createdAt: new Date().toISOString(),
     });
@@ -824,11 +852,20 @@ function wireEvents() {
       return;
     }
 
+    const reply = e.target.closest('button[data-reply]');
+    if (reply) {
+      stashForm(path);
+      getUI(path).form = { replyTo: reply.dataset.reply };
+      renderFile(path);
+      return;
+    }
+
     const cact = e.target.closest('button[data-cact]');
     if (cact) {
       const id = cact.dataset.id;
       if (cact.dataset.cact === 'delete') {
-        drafts = drafts.filter((c) => c.id !== id);
+        // Deleting a thread root takes its replies with it.
+        drafts = drafts.filter((c) => c.id !== id && c.parentId !== id);
         scheduleDraftSave();
         renderFile(path);
       } else {
@@ -836,7 +873,7 @@ function wireEvents() {
         const c = drafts.find((c) => c.id === id);
         if (!c) return;
         const ui = getUI(path);
-        ui.form = { editingId: id, fileLevel: c.fileLevel,
+        ui.form = { editingId: id, fileLevel: c.fileLevel, parentId: c.parentId,
           side: c.side, startLine: c.startLine, endLine: c.endLine };
         ui.formText = c.text;
         renderFile(path);
