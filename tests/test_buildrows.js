@@ -150,4 +150,81 @@ const thread = ctx.threadHtml(withReply[0], withReply, { form: null }, false);
 check('thread contains root and reply text',
   thread.includes('follow-up') && thread.includes('Reply'));
 
+// 12. split view: rows zip into side-by-side pairs
+const pairRows = ctx.pairRows;
+rows = buildRows(file, { expansions: {}, content: null });
+let pairs = pairRows(rows);
+check('gaps and hunk heads pass through',
+  pairs.filter((p) => p.kind === 'gap').length === 3
+  && pairs.filter((p) => p.kind === 'hunkhead').length === 2);
+check('every line row appears exactly once',
+  pairs.filter((p) => p.kind === 'pair')
+    .flatMap((p) => (p.left === p.right ? [p.left] : [p.left, p.right]))
+    .filter(Boolean).length === rows.filter((r) => r.kind === 'line').length);
+check('context spans both columns',
+  pairs.filter((p) => p.kind === 'pair' && p.left && p.left.t === 'ctx')
+    .every((p) => p.left === p.right));
+const replaced = pairs.find((p) => p.kind === 'pair' && p.left && p.left.t === 'del');
+check('a replacement pairs del with add',
+  replaced.left.text === 'old5' && replaced.right.text === 'new5');
+const inserted = pairs.find((p) => p.kind === 'pair' && p.left === null);
+check('a lone insertion pairs with a blank left',
+  inserted.right.text === 'inserted' && inserted.right.t === 'add');
+
+// 13. uneven change blocks: the longer side's leftovers get blank partners
+const uneven = { path: 'u', status: 'modified', binary: false, newTotal: null, hunks: [
+  { oldStart: 1, oldCount: 4, newStart: 1, newCount: 2, lines: [
+    { t: 'ctx', old: 1, new: 1, text: 'keep' },
+    { t: 'del', old: 2, new: null, text: 'd1' }, { t: 'del', old: 3, new: null, text: 'd2' },
+    { t: 'del', old: 4, new: null, text: 'd3' }, { t: 'add', old: null, new: 2, text: 'a1' },
+  ] }] };
+pairs = pairRows(buildRows(uneven, { expansions: {}, content: null }))
+  .filter((p) => p.kind === 'pair');
+check('context + 3 dels + 1 add make 4 rows', pairs.length === 4, pairs.length);
+check('first del takes the add', pairs[1].left.text === 'd1' && pairs[1].right.text === 'a1');
+check('later dels get blank right cells',
+  pairs[2].right === null && pairs[3].right === null);
+
+// 14. an add run followed by a del run starts a new block (dels stay left)
+const blocks = [
+  { kind: 'line', di: 0, t: 'add', old: null, new: 1, text: 'a' },
+  { kind: 'line', di: 1, t: 'del', old: 1, new: null, text: 'd' },
+];
+pairs = pairRows(blocks);
+check('add then del does not share a row',
+  pairs.length === 2 && pairs[0].left === null && pairs[1].right === null);
+
+// 15. a split-view selection is scoped to the column it was dragged in
+const selectionRows = ctx.selectionRows;
+const selectionAnchor = ctx.selectionAnchor;
+rows = buildRows(file, { expansions: {}, content: null });
+const di = (text) => rows.find((r) => r.kind === 'line' && r.text === text).di;
+const span = [di('old5'), di('l8')]; // del5, add5, l6, l7, l8
+
+check('inline selection keeps both sides',
+  selectionRows(rows, span[0], span[1], null).length === 5);
+check('old column drops the additions',
+  selectionRows(rows, span[0], span[1], 'old').map((r) => r.text)
+    .join(',') === 'old5,l6,l7,l8');
+check('new column drops the deletions',
+  selectionRows(rows, span[0], span[1], 'new').map((r) => r.text)
+    .join(',') === 'new5,l6,l7,l8');
+
+// Deletions plus context anchor on the new side (an old-side anchor over
+// context would detach), but the excerpt still quotes the deleted line.
+let anchor = selectionAnchor(selectionRows(rows, span[0], span[1], 'old'));
+check('mixed old-column selection anchors on the new side',
+  anchor.side === 'new' && anchor.startLine === 6 && anchor.endLine === 8,
+  JSON.stringify(anchor));
+check('excerpt keeps the deleted line', anchor.excerpt[0] === '-old5');
+
+// An all-deletions selection is the one case that anchors on the old side.
+anchor = selectionAnchor(selectionRows(rows, di('old5'), di('old5'), 'old'));
+check('pure deletion selection anchors on the old side',
+  anchor.side === 'old' && anchor.startLine === 5 && anchor.endLine === 5);
+
+anchor = selectionAnchor(selectionRows(rows, span[0], span[1], 'new'));
+check('new-column selection anchors on its own lines',
+  anchor.side === 'new' && anchor.startLine === 5 && anchor.endLine === 8);
+
 process.exit(failures ? 1 : 0);

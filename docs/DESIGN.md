@@ -45,8 +45,9 @@ review can show only what changed since.
 - `server.py` — stdlib `ThreadingHTTPServer`. Diff collection/parsing,
   staging, staleness fingerprinting, draft re-anchoring, review snapshots,
   markdown rendering, static file serving (whitelist, `no-store`).
-- `public/app.js` — all UI logic. `buildRows` (hunks + expanded context →
-  display rows) is the unit-tested core.
+- `public/app.js` — all UI logic. The unit-tested core: `buildRows` (hunks +
+  expanded context → display rows), `pairRows` (display rows → side-by-side
+  rows), and `selectionRows`/`selectionAnchor` (a drag → the comment anchor).
 - `public/highlight.js` — spec-driven, dependency-free syntax tokenizer.
 - `tests/test_buildrows.js`, `tests/test_highlight.js` — run with
   `node tests/<file>.js`; they stub the DOM and evaluate `app.js` in a vm.
@@ -83,6 +84,28 @@ review can show only what changed since.
   the audit diff as the reviewer saw it, but the content snapshot always
   covers the plain changed-file set so later deltas don't resurface
   pre-review whitespace edits.
+- **Inline vs split** (the `Inline | Split` segmented control in the topbar;
+  per-machine localStorage, like the code font): inline is the unified
+  single-column table. Split puts the old side left and the new side right in
+  one 8-column table — `pairRows` zips the flat display rows into pairs
+  (deletions left, additions right, context spanning both as `left === right`,
+  a longer side's leftovers against a blank cell). One table rather than two
+  keeps both sides of a wrapped line on the same row. The split table declares
+  a `<colgroup>` and uses `table-layout: fixed`, so the two sides stay exactly
+  equal and content can never widen a column — without it the code cells
+  over-constrain the table, Firefox widens it past the wrapper, and the right
+  column gets clipped. A comment (and the open form) sits under the column it
+  annotates rather than spanning the row, so which side it is about is
+  unmistakable. It is purely a rendering
+  choice — no refetch, no API or comment-model change — so flipping views keeps
+  expanded context, open forms, viewed marks and staleness state exactly as
+  they were, and it applies to audit-trail diffs too. Below `MIN_SPLIT_PX`
+  (1000 px) there is no room for two code columns, so split renders inline
+  until the window widens (GitHub does the same); the toggle keeps showing the
+  choice, dimmed and italic. Crossing that threshold re-renders the working
+  diff in place — no fetch, nothing lost — while audit-trail diffs already on
+  screen keep their shape until reopened. The control sits in the topbar rather
+  than the gear menu because view mode gets flipped far more often than a font.
 - Hidden unchanged regions render as gap bars with **↓ 20 / ↑ 20 / Show all**
   expansion controls; expansion fetches working-tree content lazily via
   `/api/file`.
@@ -92,6 +115,10 @@ review can show only what changed since.
   separately; carries reset at unexpanded gaps. Known limit: a hunk that
   *starts* inside a block comment or multiline string renders plain until the
   construct closes — cheap and predictable beats fetching whole files.
+- Page width is two knobs: `--page-max` (1800 px) and `--page-pad` (24 px of
+  side inset), both shared by the topbar and `main` so the two stay aligned.
+  Split view wants every pixel, and the old 1200 px cap left wide windows
+  mostly empty.
 - Tab title is `gandalf: <branch>:<repo>`. The **gear (Settings) menu** in
   the topbar sets a per-machine monospace font (localStorage, prepended to
   the `--mono` stack so missing fonts fall through — never hardcode a
@@ -125,6 +152,16 @@ review can show only what changed since.
   treats them as normal comments.
 - Overlapping and duplicate ranges are allowed. When several comments end on
   the same line, the widest range renders first, then oldest.
+- **In split view a drag stays in the column it started in** (`selectionRows`);
+  blank cells carry no display index, so they are skipped rather than crossed.
+  The anchor side is then decided the same way in both views
+  (`selectionAnchor`): anything with a working-tree line number anchors on the
+  new side, and only an all-deletions selection anchors on the old side. That
+  is deliberate — `reanchor_drafts` keeps an old-side draft attached only while
+  its whole range is deleted lines, so an old-side anchor spanning context
+  would detach on the next load. A left-column sweep that mixes deletions and
+  context therefore anchors on its context lines, with the deletions still
+  quoted in the excerpt (the same rule the unified view has always used).
 - **Threads** (single-level, since 2026-08-01 — supersedes the original
   "flat comments" rule): every line/file comment has a **Reply** footer;
   replies are drafts with `parentId` pointing at the thread root, carry no
@@ -262,3 +299,10 @@ Branch-scoped; detached HEAD uses `detached-<sha>`. All writes are atomic
   see git history for examples; there is no committed server test suite yet.
 - UI changes only need a browser reload (static files are `no-store`);
   `server.py` changes need a server restart.
+- Layout/visual changes can be checked for real without a desktop: run the
+  server on a fixture repo and drive **headless Firefox** through
+  `geckodriver`'s WebDriver HTTP API from a stdlib Python script (navigate,
+  wait for `table.diff`, resize, `/screenshot`). Scripted DOM events
+  (`mousedown` on a `.addc` button + `mouseover` + `mouseup` on `document`)
+  exercise drag-selection and the comment forms end to end. That is how the
+  split view's column widths, clipping and selection painting were verified.

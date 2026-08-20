@@ -1,6 +1,8 @@
 /* Gandalf — local review UI. No external fonts, no external anything. */
 
 :root {
+  --page-max: 1800px;
+  --page-pad: 24px;
   --bg: #f6f8fa;
   --panel: #ffffff;
   --border: #d1d9e0;
@@ -19,6 +21,7 @@
   --gap-bg: #eef1f4;
   --gap-text: #9a6700;
   --sel-bg: #fff8c5;
+  --blank-bg: #f0f2f5;
   --comment-bg: #fffbe6;
   --comment-border: #d4a72c;
   --danger: #cf222e;
@@ -52,6 +55,7 @@
     --gap-bg: #1c2128;
     --gap-text: #d4a72c;
     --sel-bg: #3a3000;
+    --blank-bg: #10151b;
     --comment-bg: #2a2410;
     --comment-border: #9e6a03;
     --danger: #f85149;
@@ -113,9 +117,9 @@ button.plain-link:hover { color: var(--accent); }
   border-bottom: 1px solid var(--border);
 }
 .topbar-inner {
-  max-width: 1200px;
+  max-width: var(--page-max);
   margin: 0 auto;
-  padding: 8px 16px;
+  padding: 8px var(--page-pad);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -165,6 +169,34 @@ button.plain-link:hover { color: var(--accent); }
   font-weight: 600;
 }
 .delta-note { color: var(--accent); font-weight: 600; }
+
+/* Inline/split segmented control. `.narrowed` means split is selected but the
+   window is too small for two code columns, so the diff renders inline. */
+#view-toggle { display: flex; flex: none; }
+#view-toggle button {
+  position: relative;
+  border-radius: 0;
+  padding: 4px 10px;
+  font-size: 13px;
+  white-space: nowrap;
+  background: transparent;
+  color: var(--muted);
+}
+#view-toggle button:first-child { border-radius: 6px 0 0 6px; }
+#view-toggle button:last-child { border-radius: 0 6px 6px 0; }
+#view-toggle button + button { margin-left: -1px; }
+#view-toggle button:hover { color: var(--text); border-color: var(--muted); z-index: 1; }
+#view-toggle button.on {
+  z-index: 1;
+  color: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+#view-toggle.narrowed button.on {
+  color: var(--muted);
+  border-color: var(--border);
+  font-style: italic;
+}
 
 /* Beats `.settings-panel label/input` (block + full width) for checkbox rows. */
 .settings-panel label.settings-check {
@@ -230,9 +262,9 @@ button.plain-link:hover { color: var(--accent); }
 .settings-hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
 
 main {
-  max-width: 1200px;
+  max-width: var(--page-max);
   margin: 0 auto;
-  padding: 16px;
+  padding: 16px var(--page-pad);
 }
 
 #stale {
@@ -446,6 +478,26 @@ tr.del { background: var(--del-bg); }
 tr.del td.num { background: var(--del-num-bg); color: var(--text); }
 tr.ln.selrange td { background: var(--sel-bg) !important; }
 tr.commented td.code { box-shadow: inset 3px 0 0 var(--comment-border); }
+
+/* ---- split (side-by-side) diff ----
+   One table with two four-cell groups per row, so a line that wraps still
+   leaves both sides on the same row. Add/del shading moves from the row to the
+   cells, since each column carries its own state. */
+table.diff.split { table-layout: fixed; }
+table.diff.split col.c-plus { width: 22px; }
+table.diff.split col.c-num { width: 48px; }
+table.diff.split col.c-sign { width: 18px; }
+/* whatever is left after one side's 22 + 48 + 18 of gutter */
+table.diff.split col.c-code { width: calc(50% - 88px); }
+table.diff.split td.plus-cell.edge { border-left: 1px solid var(--border); }
+table.diff.split tr.ln-pair:hover td.plus-cell button.addc { visibility: visible; }
+td.s-add { background: var(--add-bg); }
+td.num.s-add { background: var(--add-num-bg); color: var(--text); }
+td.s-del { background: var(--del-bg); }
+td.num.s-del { background: var(--del-num-bg); color: var(--text); }
+td.blank { background: var(--blank-bg); }
+td.code.commented { box-shadow: inset 3px 0 0 var(--comment-border); }
+td.selrange { background: var(--sel-bg) !important; }
 
 /* hunk section header */
 tr.hunk-head td {

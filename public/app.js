@@ -67,6 +67,20 @@ const WS_KEY = 'gandalf.ignoreWs';
 let ignoreWs = false;
 try { ignoreWs = localStorage.getItem(WS_KEY) === '1'; } catch (_) { /* fine */ }
 
+// Inline (unified, one column) vs split (side-by-side) diffs — a per-machine
+// display preference like the code font. Below MIN_SPLIT_PX there is no room
+// for two code columns, so split renders inline until the window grows again
+// (GitHub does the same); the toggle keeps showing what was chosen.
+const VIEW_KEY = 'gandalf.diffView';
+const MIN_SPLIT_PX = 1000;
+let diffView = 'inline';
+try { if (localStorage.getItem(VIEW_KEY) === 'split') diffView = 'split'; } catch (_) { /* fine */ }
+// Guarded so the headless test harness (no matchMedia) still loads app.js.
+const wideQuery = typeof matchMedia === 'function'
+  ? matchMedia(`(min-width: ${MIN_SPLIT_PX}px)`) : null;
+const wideEnough = () => !wideQuery || wideQuery.matches;
+const splitView = () => diffView === 'split' && wideEnough();
+
 function fetchReview() {
   const params = new URLSearchParams();
   if (baseline) params.set('since', baseline);
@@ -150,6 +164,38 @@ function buildRows(file, ui) {
     emitGap('g' + hunks.length, from, file.newTotal, from - (last.oldStart + last.oldCount), 'tail');
   }
   return rows;
+}
+
+// Zips a file's display rows into side-by-side rows: deletions on the left,
+// additions on the right, context spanning both (`left === right`). Runs of
+// del/add within a change block pair up positionally, GitHub-style, and the
+// longer side's leftovers pair with a blank cell. Gap and hunk-header rows
+// pass through unchanged and still span the full width.
+function pairRows(rows) {
+  const out = [];
+  let dels = [];
+  let adds = [];
+  const flush = () => {
+    const n = Math.max(dels.length, adds.length);
+    for (let i = 0; i < n; i++) {
+      out.push({ kind: 'pair', left: dels[i] || null, right: adds[i] || null });
+    }
+    dels = [];
+    adds = [];
+  };
+  for (const r of rows) {
+    if (r.kind === 'line' && r.t === 'del') {
+      if (adds.length) flush(); // a new change block started
+      dels.push(r);
+    } else if (r.kind === 'line' && r.t === 'add') {
+      adds.push(r);
+    } else {
+      flush();
+      out.push(r.kind === 'line' ? { kind: 'pair', left: r, right: r } : r);
+    }
+  }
+  flush();
+  return out;
 }
 
 /* -------------------------------------------------------------- rendering */
@@ -311,9 +357,41 @@ function lineRowHtml(r, covered, readOnly, codeHtml) {
   </tr>`;
 }
 
-function gapRowHtml(r, readOnly) {
+// One side of a split row: four cells (comment button, line number, sign,
+// code) carrying the display index and which column they are, so a drag knows
+// what it swept. A missing row (the shorter side of a change block) renders as
+// a blank, unselectable group.
+function sideCellsHtml(r, side, covered, readOnly) {
+  const edge = side === 'new' ? ' edge' : '';
+  if (!r) {
+    return `<td class="plus-cell blank${edge}"></td><td class="num blank"></td>`
+      + '<td class="sign blank"></td><td class="code half blank"></td>';
+  }
+  const cls = r.t === 'add' ? 'add' : r.t === 'del' ? 'del' : 'ctx';
+  const num = side === 'old' ? r.old : r.new;
+  const isCov = num != null && covered.has(side + ':' + num);
+  const sign = r.t === 'add' ? '+' : r.t === 'del' ? '-' : '';
+  const plus = readOnly ? '' : '<button class="addc" tabindex="-1" title="Add comment (drag to select a range)">+</button>';
+  const at = ` data-di="${r.di}" data-dside="${side}"`;
+  return `<td class="plus-cell s-${cls}${edge}"${at}>${plus}</td>`
+    + `<td class="num s-${cls}"${at}>${num ?? ''}</td>`
+    + `<td class="sign s-${cls}"${at}>${sign}</td>`
+    + `<td class="code half s-${cls}${isCov ? ' commented' : ''}"${at}>${r.codeHtml ?? esc(r.text)}</td>`;
+}
+
+// `pair.left === pair.right` for context, which is highlighted once and shown
+// in both columns.
+function pairRowHtml(pair, covered, readOnly, htmlL, htmlR) {
+  const withHtml = (r, h) => (r == null ? null : (h == null ? r : { ...r, codeHtml: h }));
+  return '<tr class="ln-pair">'
+    + sideCellsHtml(withHtml(pair.left, htmlL), 'old', covered, readOnly)
+    + sideCellsHtml(withHtml(pair.right, htmlR), 'new', covered, readOnly)
+    + '</tr>';
+}
+
+function gapRowHtml(r, readOnly, cols) {
   if (readOnly) {
-    return `<tr class="gap"><td colspan="5"><div class="gap-inner">
+    return `<tr class="gap"><td colspan="${cols}"><div class="gap-inner">
       <span class="gap-count">⋯ ${r.hidden} unchanged line${r.hidden === 1 ? '' : 's'} not shown</span>
     </div></td></tr>`;
   }
@@ -323,13 +401,13 @@ function gapRowHtml(r, readOnly) {
     if (r.pos !== 'tail') btns.push(`<button data-act="up" data-gap="${r.id}" title="Show the ${EXPAND_STEP} lines above the code below">↑ ${EXPAND_STEP}</button>`);
   }
   btns.push(`<button data-act="all" data-gap="${r.id}">Show all</button>`);
-  return `<tr class="gap"><td colspan="5"><div class="gap-inner">
+  return `<tr class="gap"><td colspan="${cols}"><div class="gap-inner">
     ${btns.join('')}
     <span class="gap-count">${r.hidden} unchanged line${r.hidden === 1 ? '' : 's'} hidden</span>
   </div></td></tr>`;
 }
 
-function hunkHeadHtml(file, r, readOnly) {
+function hunkHeadHtml(file, r, readOnly, cols) {
   const h = r.hunk;
   const label = `@@ -${h.oldStart},${h.oldCount} +${h.newStart},${h.newCount} @@` +
     (h.section ? ' ' + h.section : '');
@@ -344,7 +422,7 @@ function hunkHeadHtml(file, r, readOnly) {
       ? `<span class="staged-tick">staged ✓</span><button class="hh-btn" data-hact="unstage-hunk" data-hunk="${r.hunkIdx}">Unstage hunk</button>`
       : `<button class="hh-btn" data-hact="stage-hunk" data-hunk="${r.hunkIdx}">Stage hunk</button>`;
   }
-  return `<tr class="hunk-head"><td colspan="5"><div class="hh-inner">
+  return `<tr class="hunk-head"><td colspan="${cols}"><div class="hh-inner">
     <span class="hh-label">${esc(label)}</span><span class="spacer"></span>${btn}
   </div></td></tr>`;
 }
@@ -404,28 +482,62 @@ function buildFileSection(file, comments, ui, opts) {
         : file.untracked ? 'New empty file.' : 'No content changes.';
       parts.push(`<div class="file-note">${note}</div>`);
     } else {
+      const split = !!(opts && opts.split);
+      const cols = split ? 8 : 5;
       const rows = buildRows(file, ui);
       const viewBaseline = (opts && opts.baseline) ?? null;
       const anchors = commentsByAnchor(comments, viewBaseline);
       const covered = coverageSet(comments, viewBaseline);
       const rendered = new Set();
       const hl = makeHighlighter(file.path);
-      parts.push('<div class="diff-wrap"><table class="diff"><tbody>');
-      for (const r of rows) {
-        if (r.kind === 'gap') { if (hl) hl.reset(); parts.push(gapRowHtml(r, readOnly)); continue; }
-        if (r.kind === 'hunkhead') { parts.push(hunkHeadHtml(file, r, readOnly)); continue; }
-        parts.push(lineRowHtml(r, covered, readOnly, hl && hl.html(r)));
-        for (const side of ['old', 'new']) {
-          const num = r[side];
-          if (num == null) continue;
-          for (const c of anchors.get(side + ':' + num) || []) {
-            if (rendered.has(c.id)) continue;
-            rendered.add(c.id);
-            parts.push(`<tr class="crow"><td colspan="5">${threadHtml(c, comments, ui, readOnly)}</td></tr>`);
+      // Split declares its columns up front: with `table-layout: fixed` the two
+      // sides stay exactly equal, so the divider is centred and content can
+      // never widen a column (rows that span the table would otherwise decide
+      // the layout).
+      // In split view a comment (or the open form) sits under the column it
+      // annotates, so which side it is about is unmistakable; inline spans the
+      // whole row.
+      const crow = (html, side) => split
+        ? '<tr class="crow">' + (side === 'old'
+            ? `<td colspan="4">${html}</td><td colspan="4"></td>`
+            : `<td colspan="4"></td><td colspan="4">${html}</td>`) + '</tr>'
+        : `<tr class="crow"><td colspan="${cols}">${html}</td></tr>`;
+      const colgroup = split
+        ? '<colgroup>' + ('<col class="c-plus"><col class="c-num"><col class="c-sign"><col class="c-code">').repeat(2) + '</colgroup>'
+        : '';
+      parts.push(`<div class="diff-wrap"><table class="diff${split ? ' split' : ''}">${colgroup}<tbody>`);
+      for (const u of split ? pairRows(rows) : rows) {
+        if (u.kind === 'gap') { if (hl) hl.reset(); parts.push(gapRowHtml(u, readOnly, cols)); continue; }
+        if (u.kind === 'hunkhead') { parts.push(hunkHeadHtml(file, u, readOnly, cols)); continue; }
+        // A unified row shows one line; a split row shows a deletion beside
+        // its replacement, or the same context line in both columns. Threads
+        // and the open form go under whichever row holds their line.
+        let lineRows;
+        if (u.kind === 'pair') {
+          // Each side keeps its own highlighter carry, so alternating between
+          // the columns still feeds each side its own lines in order.
+          const hL = hl && u.left ? hl.html(u.left) : null;
+          const hR = hl && u.right ? (u.right === u.left ? hL : hl.html(u.right)) : null;
+          parts.push(pairRowHtml(u, covered, readOnly, hL, hR));
+          lineRows = (u.left === u.right ? [u.left] : [u.left, u.right]).filter(Boolean);
+        } else {
+          parts.push(lineRowHtml(u, covered, readOnly, hl && hl.html(u)));
+          lineRows = [u];
+        }
+        for (const r of lineRows) {
+          for (const side of ['old', 'new']) {
+            const num = r[side];
+            if (num == null) continue;
+            for (const c of anchors.get(side + ':' + num) || []) {
+              if (rendered.has(c.id)) continue;
+              rendered.add(c.id);
+              parts.push(crow(threadHtml(c, comments, ui, readOnly), side));
+            }
           }
         }
-        if (!readOnly && ui.form && !ui.form.editingId && ui.form.endDi === r.di) {
-          parts.push(`<tr class="crow"><td colspan="5">${formBoxHtml(ui)}</td></tr>`);
+        if (!readOnly && ui.form && !ui.form.editingId
+            && lineRows.some((r) => r.di === ui.form.endDi)) {
+          parts.push(crow(formBoxHtml(ui), ui.form.side));
         }
       }
       parts.push('</tbody></table></div>');
@@ -449,7 +561,7 @@ function renderFile(path) {
   const file = review.files.find((f) => f.path === path);
   if (!file) return;
   const fresh = buildFileSection(file, draftsFor(path), getUI(path),
-    { readOnly: false, baseline: review.since });
+    { readOnly: false, baseline: review.since, split: splitView() });
   const old = fileSections.get(path);
   if (old) old.replaceWith(fresh);
   fileSections.set(path, fresh);
@@ -467,7 +579,7 @@ function renderFiles() {
   fileSections.clear();
   for (const f of review.files) {
     const sec = buildFileSection(f, draftsFor(f.path), getUI(f.path),
-      { readOnly: false, baseline: review.since });
+      { readOnly: false, baseline: review.since, split: splitView() });
     fileSections.set(f.path, sec);
     container.appendChild(sec);
   }
@@ -611,7 +723,8 @@ async function loadRevision(details, n) {
     for (const f of snap.files) {
       const comments = snap.comments.filter((c) => c.file === f.path);
       const ui = { collapsed: comments.length === 0, expansions: {}, content: null, form: null };
-      body.appendChild(buildFileSection(f, comments, ui, { readOnly: true }));
+      body.appendChild(buildFileSection(f, comments, ui,
+        { readOnly: true, split: splitView() }));
     }
     if (!snap.files.length) {
       body.appendChild(Object.assign(document.createElement('div'),
@@ -624,21 +737,45 @@ async function loadRevision(details, n) {
 
 /* -------------------------------------------------------- comment editing */
 
-function openForm(path, startDi, endDi) {
+// The line rows a selection covers. `col` ('old' | 'new' | null inline) is the
+// split-view column it was dragged in: the other column's rows fall inside the
+// same display-index range but were never swept, so they drop out.
+function selectionRows(rows, startDi, endDi, col) {
+  const sel = rows.filter((r) => r.kind === 'line' && r.di >= startDi && r.di <= endDi);
+  if (col === 'old') return sel.filter((r) => r.old != null);
+  if (col === 'new') return sel.filter((r) => r.new != null);
+  return sel;
+}
+
+// What a selection anchors to, decided the same way in both views: anything
+// with a working-tree line number anchors on the new side and follows the code
+// from then on; only an all-deletions selection anchors on the old side. (An
+// old-side anchor spanning context lines would detach on the next load, since
+// only wholly-deleted ranges stay attached.) The excerpt keeps every selected
+// line, including deletions the anchor itself skips.
+function selectionAnchor(rows) {
+  const side = rows.some((r) => r.new != null) ? 'new' : 'old';
+  const nums = rows.map((r) => r[side]).filter((n) => n != null);
+  return {
+    side,
+    startLine: nums[0],
+    endLine: nums[nums.length - 1],
+    excerpt: rows.map((r) => (r.t === 'add' ? '+' : r.t === 'del' ? '-' : ' ') + r.text),
+  };
+}
+
+function openForm(path, startDi, endDi, col) {
   stashForm(path);
   const file = review.files.find((f) => f.path === path);
   const ui = getUI(path);
-  const rows = buildRows(file, ui).filter((r) => r.kind === 'line' && r.di >= startDi && r.di <= endDi);
+  const rows = selectionRows(buildRows(file, ui), startDi, endDi, col);
   if (!rows.length) return;
-  const side = rows.some((r) => r.new != null) ? 'new' : 'old';
-  const nums = rows.map((r) => r[side]).filter((n) => n != null);
-  const startLine = nums[0];
-  const endLine = nums[nums.length - 1];
+  const a = selectionAnchor(rows);
   ui.form = {
-    startDi, endDi, side, startLine, endLine,
+    startDi, endDi, side: a.side, startLine: a.startLine, endLine: a.endLine,
     // Old-side line numbers are meaningful only in the view they came from.
-    baseline: side === 'old' ? (review.since ?? null) : null,
-    excerpt: rows.map((r) => (r.t === 'add' ? '+' : r.t === 'del' ? '-' : ' ') + r.text),
+    baseline: a.side === 'old' ? (review.since ?? null) : null,
+    excerpt: a.excerpt,
   };
   ui.formText = '';
   renderFile(path);
@@ -772,19 +909,23 @@ async function expandGap(path, gapId, act) {
 
 /* ----------------------------------------------------------- interactions */
 
-let dragSel = null; // {path, anchor, head} in display-row indices
+// {path, anchor, head} in display-row indices, plus the split-view column the
+// drag started in (null inline). Inline carries the index on the <tr>, split on
+// each side's cells, so both paint through the same `[data-di]` selector.
+let dragSel = null;
 
 function paintSelection(sec) {
   const lo = Math.min(dragSel.anchor, dragSel.head);
   const hi = Math.max(dragSel.anchor, dragSel.head);
-  sec.querySelectorAll('tr.ln').forEach((tr) => {
-    const di = +tr.dataset.di;
-    tr.classList.toggle('selrange', di >= lo && di <= hi);
+  sec.querySelectorAll('[data-di]').forEach((el) => {
+    const di = +el.dataset.di;
+    const sameCol = !dragSel.col || el.dataset.dside === dragSel.col;
+    el.classList.toggle('selrange', sameCol && di >= lo && di <= hi);
   });
 }
 
 function clearSelectionPaint() {
-  document.querySelectorAll('tr.ln.selrange').forEach((tr) => tr.classList.remove('selrange'));
+  document.querySelectorAll('.selrange').forEach((el) => el.classList.remove('selrange'));
 }
 
 function wireEvents() {
@@ -794,28 +935,33 @@ function wireEvents() {
     const btn = e.target.closest('button.addc');
     if (!btn) return;
     e.preventDefault();
-    const tr = btn.closest('tr.ln');
+    const cell = btn.closest('[data-di]');
     const sec = btn.closest('section.file');
-    dragSel = { path: sec.dataset.path, anchor: +tr.dataset.di, head: +tr.dataset.di };
+    if (!cell || !sec) return;
+    dragSel = { path: sec.dataset.path, anchor: +cell.dataset.di, head: +cell.dataset.di,
+      col: cell.dataset.dside || null };
     paintSelection(sec);
   });
 
   files.addEventListener('mouseover', (e) => {
     if (!dragSel) return;
-    const tr = e.target.closest('tr.ln');
-    if (!tr) return;
-    const sec = tr.closest('section.file');
+    const cell = e.target.closest('[data-di]');
+    if (!cell) return;
+    // A split-view selection stays in the column it started in; the blank
+    // cells of a shorter change block carry no index and are simply skipped.
+    if (dragSel.col && cell.dataset.dside !== dragSel.col) return;
+    const sec = cell.closest('section.file');
     if (!sec || sec.dataset.path !== dragSel.path) return;
-    dragSel.head = +tr.dataset.di;
+    dragSel.head = +cell.dataset.di;
     paintSelection(sec);
   });
 
   document.addEventListener('mouseup', () => {
     if (!dragSel) return;
-    const { path, anchor, head } = dragSel;
+    const { path, anchor, head, col } = dragSel;
     dragSel = null;
     clearSelectionPaint();
-    openForm(path, Math.min(anchor, head), Math.max(anchor, head));
+    openForm(path, Math.min(anchor, head), Math.max(anchor, head), col);
   });
 
   files.addEventListener('click', (e) => {
@@ -1134,6 +1280,49 @@ wsToggle.addEventListener('change', () => {
   load(false);
   toast(ignoreWs ? 'Ignoring whitespace changes.' : 'Showing whitespace changes.');
 });
+// Inline/split toggle. Purely a rendering choice: no refetch, and the diff,
+// the comments and any expanded context are untouched, so flipping views keeps
+// every open form and every revealed line right where it was.
+const viewToggle = $('#view-toggle');
+function renderViewToggle() {
+  const narrowed = diffView === 'split' && !wideEnough();
+  viewToggle.classList.toggle('narrowed', narrowed);
+  for (const b of viewToggle.querySelectorAll('button')) {
+    const on = b.dataset.view === diffView;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    if (b.dataset.view === 'split') {
+      b.title = narrowed
+        ? `Side-by-side — the window is under ${MIN_SPLIT_PX}px, so the diff shows inline`
+        : 'Side-by-side diff: old on the left, new on the right';
+    }
+  }
+}
+viewToggle.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-view]');
+  if (!btn || btn.dataset.view === diffView) return;
+  diffView = btn.dataset.view;
+  try {
+    if (diffView === 'split') localStorage.setItem(VIEW_KEY, 'split');
+    else localStorage.removeItem(VIEW_KEY);
+  } catch (_) { /* fine */ }
+  renderViewToggle();
+  if (review) renderFiles();
+  if (diffView === 'split' && !wideEnough()) {
+    toast(`The window is under ${MIN_SPLIT_PX}px — showing inline until it is wider.`);
+  }
+});
+// Crossing the width threshold re-renders the working diff in place; forms and
+// expansions live in fileUI, so nothing is lost. Audit-trail diffs already on
+// screen keep their shape until they are collapsed and reopened.
+if (wideQuery) {
+  wideQuery.addEventListener('change', () => {
+    renderViewToggle();
+    if (diffView === 'split' && review) renderFiles();
+  });
+}
+renderViewToggle();
+
 $('#settings').addEventListener('toggle', () => {
   if ($('#settings').open) fontInput.focus();
 });
