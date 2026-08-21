@@ -47,10 +47,12 @@ review can show only what changed since.
   markdown rendering, static file serving (whitelist, `no-store`).
 - `public/app.js` — all UI logic. The unit-tested core: `buildRows` (hunks +
   expanded context → display rows), `pairRows` (display rows → side-by-side
-  rows), and `selectionRows`/`selectionAnchor` (a drag → the comment anchor).
+  rows), `selectionRows`/`selectionAnchor` (a drag → the comment anchor), and
+  `buildTree`/`treeRows`/`markName` (file paths → sidebar rows).
 - `public/highlight.js` — spec-driven, dependency-free syntax tokenizer.
-- `tests/test_buildrows.js`, `tests/test_highlight.js` — run with
-  `node tests/<file>.js`; they stub the DOM and evaluate `app.js` in a vm.
+- `tests/test_buildrows.js`, `tests/test_highlight.js`,
+  `tests/test_filetree.js` — run with `node tests/<file>.js`; they stub the
+  DOM and evaluate `app.js` in a vm.
 
 ### HTTP API
 
@@ -99,12 +101,14 @@ review can show only what changed since.
   unmistakable. It is purely a rendering
   choice — no refetch, no API or comment-model change — so flipping views keeps
   expanded context, open forms, viewed marks and staleness state exactly as
-  they were, and it applies to audit-trail diffs too. Below `MIN_SPLIT_PX`
-  (1000 px) there is no room for two code columns, so split renders inline
-  until the window widens (GitHub does the same); the toggle keeps showing the
-  choice, dimmed and italic. Crossing that threshold re-renders the working
-  diff in place — no fetch, nothing lost — while audit-trail diffs already on
-  screen keep their shape until reopened. The control sits in the topbar rather
+  they were, and it applies to audit-trail diffs too. Two code columns need
+  `MIN_SPLIT_PX` (1000 px) of room *for the diff* — so `MIN_SPLIT_PX +
+  TREE_PX` of window while the file tree is up — and below that split renders
+  inline until there is room (GitHub does the same); the toggle keeps showing
+  the choice, dimmed and italic, and its tooltip (and the toast) says whether
+  the window or the sidebar is the reason. Crossing a threshold re-renders the
+  working diff in place — no fetch, nothing lost — while audit-trail diffs
+  already on screen keep their shape until reopened. The control sits in the topbar rather
   than the gear menu because view mode gets flipped far more often than a font.
 - Hidden unchanged regions render as gap bars with **↓ 20 / ↑ 20 / Show all**
   expansion controls; expansion fetches working-tree content lazily via
@@ -125,6 +129,44 @@ review can show only what changed since.
   personal font in the repo) and holds the ignore-whitespace toggle. The
   gear is an inline SVG (stroke `currentColor`), keeping the no-external-
   assets rule.
+
+## File tree (left sidebar)
+
+A GitHub-style navigator for the files in the current view. It only
+navigates: clicking a row scrolls to that file's card and changes nothing
+else — not fold state, not Viewed, not a comment. It lists exactly the files
+the page is showing, so it narrows with the delta view, and audit-trail
+revisions (read-only history) never appear in it.
+
+- **Folders fold** (per-folder carets, plus one ⊟/⊞ control for the whole
+  tree, labelled for whichever direction it will go). A folder holding a
+  single sub-folder and nothing else is merged into it, so `docs/design` is
+  one row; the merged row is keyed by its deepest path, so folding it hides
+  exactly what it shows. Folders sort before files, each alphabetically —
+  which is why tree order differs slightly from the card order below (git's
+  plain path sort).
+- **Filter box**: whitespace-separated substrings, *all* of which must appear
+  in the path (a rename's old path counts too), case-insensitive. Not fuzzy,
+  deliberately — what the filter shows is always explainable from what was
+  typed. Hits are marked in the file name. While filtering, every match shows
+  expanded and the folder carets go inert (a search that hid its own hits
+  behind a folded folder would be a lie); fold state is kept and resumes when
+  the box is cleared. `/` focuses the box (never while typing a comment),
+  `enter` jumps to the first match, `esc` clears it and then blurs. It filters
+  the tree only — the diff below always shows every file.
+- Each row carries the file's status letter (A/M/D/R, `B` for binary), its
+  draft-comment count and its Viewed tick, so review progress reads at a
+  glance. The row for the file being read is highlighted: the first card whose
+  bottom clears the sticky header, recomputed once per scroll frame (and the
+  last card once the page bottoms out).
+- The sidebar is **per-machine, like the code font** (topbar toggle,
+  localStorage) and hides itself below `MIN_TREE_PX` (900 px), where there is
+  no room for it. `TREE_PX`/`MIN_TREE_PX` in `app.js` mirror `--tree-w` and
+  the media query in `style.css` — keep them in sync.
+- It takes width from the diff, which is why it participates in the
+  split-view threshold above; hiding it can turn split back on.
+- Indentation is drawn with guide spans rather than a `padding` style
+  attribute: the CSP forbids inline styles, and the guides are the tree lines.
 
 ## Fold vs. Viewed (GitHub-style, deliberate split)
 
@@ -292,8 +334,9 @@ Branch-scoped; detached HEAD uses `detached-<sha>`. All writes are atomic
 ## Testing & verification
 
 - `python3 -m py_compile server.py` and `node --check public/app.js` after
-  every change; `node tests/test_buildrows.js` and
-  `node tests/test_highlight.js` (assert-style, exit code is the result).
+  every change; `node tests/test_buildrows.js`,
+  `node tests/test_highlight.js` and `node tests/test_filetree.js`
+  (assert-style, exit code is the result).
 - Server behavior is exercised end-to-end with curl against throwaway fixture
   repos (`git init` + scripted edits + the real server on a spare port) —
   see git history for examples; there is no committed server test suite yet.

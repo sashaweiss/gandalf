@@ -3,6 +3,9 @@
 :root {
   --page-max: 1800px;
   --page-pad: 24px;
+  /* File-tree sidebar. Mirrored by TREE_PX in app.js, which adds it to the
+     split-view width threshold while the sidebar is up. */
+  --tree-w: 260px;
   --bg: #f6f8fa;
   --panel: #ffffff;
   --border: #d1d9e0;
@@ -212,6 +215,21 @@ button.plain-link:hover { color: var(--accent); }
   accent-color: var(--accent);
 }
 
+/* Icon-only topbar buttons (the file-tree toggle) — sized like the gear. */
+button.icon-btn {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  padding: 6px 8px;
+  color: var(--muted);
+  border-color: transparent;
+}
+button.icon-btn svg { display: block; }
+button.icon-btn:hover { color: var(--accent); border-color: var(--border); }
+button.icon-btn.on { color: var(--accent); border-color: var(--border); }
+
 #settings { position: relative; }
 #settings > summary {
   list-style: none;
@@ -265,6 +283,144 @@ main {
   max-width: var(--page-max);
   margin: 0 auto;
   padding: 16px var(--page-pad);
+}
+
+/* ---- layout: file tree beside the diff ---- */
+#layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+/* min-width: 0 is load-bearing — without it the fixed-layout split table
+   refuses to shrink and pushes the sidebar off the page. */
+#content { flex: 1 1 auto; min-width: 0; }
+
+#sidebar {
+  flex: 0 0 var(--tree-w);
+  width: var(--tree-w);
+  position: sticky;
+  top: calc(var(--topbar-h, 43px) + 16px);
+  /* Its own scroller, so a long tree never pushes the page down. */
+  max-height: calc(100vh - var(--topbar-h, 43px) - 32px);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: clip;
+}
+body.tree-hidden #sidebar { display: none; }
+/* Under this width there is no room for a sidebar; it hides itself and the
+   toggle goes with it (MIN_TREE_PX in app.js). */
+@media (max-width: 899px) {
+  #sidebar, #btn-tree { display: none; }
+}
+
+.tree-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 8px 6px;
+  border-bottom: 1px solid var(--border-soft);
+}
+#tree-search {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+#tree-search::placeholder { color: var(--muted); }
+button.tree-icon {
+  flex: none;
+  padding: 2px 7px;
+  font-size: 13px;
+  color: var(--muted);
+  background: transparent;
+}
+button.tree-icon:hover { color: var(--accent); }
+.tree-count {
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border-soft);
+}
+#tree-list {
+  overflow: auto;
+  padding: 4px 0 6px;
+}
+.tree-empty { padding: 10px; font-size: 13px; color: var(--muted); }
+
+/* Tree rows: one flex line each, indented by guide spans rather than a
+   padding style attribute (the CSP forbids inline styles). */
+.trow {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 2px 8px 2px 6px;
+  border: none;
+  border-radius: 0;
+  background: none;
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.trow.static { cursor: default; }
+.trow:not(.static):hover { background: var(--bg); }
+.trow.file.active { background: var(--sel-bg); }
+.tindent {
+  flex: none;
+  width: 11px;
+  align-self: stretch;
+  border-left: 1px solid var(--border-soft);
+}
+.tcaret { flex: none; width: 11px; color: var(--muted); font-size: 10px; }
+.tname {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trow.dir .tname { font-family: var(--sans); font-size: 13px; font-weight: 600; }
+.tname mark {
+  background: var(--sel-bg);
+  color: inherit;
+  border-radius: 2px;
+}
+.tmeta {
+  flex: none;
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.tmeta .tcomments { color: var(--comment-border); font-weight: 600; }
+.tmeta .tviewed { color: #1a7f37; font-weight: 600; }
+/* One-letter status, so a glance over the tree reads like the file chips. */
+.tstatus {
+  flex: none;
+  width: 13px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.tstatus.s-added { color: #1a7f37; }
+.tstatus.s-deleted { color: var(--danger); }
+.tstatus.s-renamed { color: var(--accent); }
+@media (prefers-color-scheme: dark) {
+  .tmeta .tviewed, .tstatus.s-added { color: #3fb950; }
 }
 
 #stale {
@@ -339,6 +495,8 @@ section.file {
      it below the topbar. clip crops the rounded corners without creating a
      scroll container. */
   overflow: clip;
+  /* Jumping here from the tree must clear the sticky topbar. */
+  scroll-margin-top: calc(var(--topbar-h, 43px) + 10px);
 }
 .file-header {
   display: flex;

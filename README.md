@@ -30,7 +30,9 @@ Options:
 
 Review should be familiar if you've used browser-based code-review tools before.
 Diffs show **inline** or **split** (side-by-side) — toggle in the topbar; the
-choice sticks on this machine. Submitting a review provides you with copyable feedback, addressed and self-explanatory, for you to paste to your agent.
+choice sticks on this machine. The left sidebar is a **file tree** of the diff:
+fold folders, filter by path (`/` focuses the box), and click a file to jump to
+it. Submitting a review provides you with copyable feedback, addressed and self-explanatory, for you to paste to your agent.
 
 Submitting a review "checkpoints" changes, such that your next review will show the diff *since the last review*, regardless of git commits. The review base is configurable.
 

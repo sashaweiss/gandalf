@@ -6,11 +6,13 @@ const vm = require('vm');
 const stubEl = () => ({
   addEventListener() {}, textContent: '', innerHTML: '', hidden: false,
   appendChild() {}, querySelector: () => null, querySelectorAll: () => [],
+  setAttribute() {}, focus() {}, select() {}, blur() {},
   classList: { toggle() {}, add() {}, remove() {}, contains: () => false },
   dataset: {},
 });
 const ctx = {
   document: {
+    body: stubEl(),
     querySelector: () => stubEl(),
     querySelectorAll: () => [],
     addEventListener() {},

@@ -17,6 +17,7 @@ python3 -m py_compile server.py
 node --check public/app.js
 node tests/test_buildrows.js
 node tests/test_highlight.js
+node tests/test_filetree.js
 ```
 
 `public/` changes only need a browser reload; `server.py` changes need a

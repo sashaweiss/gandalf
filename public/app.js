@@ -75,11 +75,35 @@ const VIEW_KEY = 'gandalf.diffView';
 const MIN_SPLIT_PX = 1000;
 let diffView = 'inline';
 try { if (localStorage.getItem(VIEW_KEY) === 'split') diffView = 'split'; } catch (_) { /* fine */ }
-// Guarded so the headless test harness (no matchMedia) still loads app.js.
-const wideQuery = typeof matchMedia === 'function'
-  ? matchMedia(`(min-width: ${MIN_SPLIT_PX}px)`) : null;
-const wideEnough = () => !wideQuery || wideQuery.matches;
+
+// Whether the sidebar is up at all (per-machine, like the code font). The
+// tree only navigates; hiding it changes nothing about the review.
+const TREE_KEY = 'gandalf.fileTree';
+let treeShown = true;
+try { treeShown = localStorage.getItem(TREE_KEY) !== '0'; } catch (_) { /* fine */ }
+
+// The file tree is a sidebar, so it takes width away from the diff: split
+// needs MIN_SPLIT_PX of *diff* room, which is MIN_SPLIT_PX + TREE_PX of
+// window while the tree is up. Below MIN_TREE_PX the sidebar hides itself
+// (the same breakpoint as the CSS rule), and the diff gets the window back.
+// TREE_PX/MIN_TREE_PX mirror --tree-w and the media query in style.css.
+const TREE_PX = 260;
+const MIN_TREE_PX = 900;
+// Guarded so the headless test harness (no matchMedia/rAF) still loads app.js.
+const raf = typeof requestAnimationFrame === 'function'
+  ? requestAnimationFrame : (fn) => setTimeout(fn, 16);
+const mq = (px) => (typeof matchMedia === 'function' ? matchMedia(`(min-width: ${px}px)`) : null);
+const wideQuery = mq(MIN_SPLIT_PX);
+const wideTreeQuery = mq(MIN_SPLIT_PX + TREE_PX);
+const treeQuery = mq(MIN_TREE_PX);
+const roomForTree = () => !treeQuery || treeQuery.matches;
+const treeVisible = () => treeShown && roomForTree();
+const wideEnough = () => {
+  const q = treeVisible() ? wideTreeQuery : wideQuery;
+  return !q || q.matches;
+};
 const splitView = () => diffView === 'split' && wideEnough();
+
 
 function fetchReview() {
   const params = new URLSearchParams();
@@ -571,6 +595,7 @@ function renderFile(path) {
     ta.selectionStart = ta.selectionEnd = ta.value.length;
   }
   updateTopbar();
+  renderTree();
 }
 
 function renderFiles() {
@@ -588,6 +613,8 @@ function renderFiles() {
     ? `No changes since review r${review.since}.`
     : 'No changes between the working tree and the base ref.';
   updateTopbar();
+  renderTree();
+  syncActiveFromScroll();
 }
 
 function updateTopbar() {
@@ -626,6 +653,258 @@ function renderBaselineSelect() {
   }
   sel.value = review.since ? String(review.since) : '';
   sel.classList.toggle('delta-on', !!review.since);
+}
+
+/* -------------------------------------------------------------- file tree */
+
+// A GitHub-style navigator for the files in the diff: the paths in
+// `review.files` as a folder tree, with foldable folders and a filter box.
+// It only navigates — clicking a file scrolls to its card and never touches
+// fold state, comments or the diff itself.
+
+// Folders the reviewer has folded, by folder path. Folders start expanded;
+// the set survives re-renders and refreshes within the page session.
+const treeFolded = new Set();
+let treeFilter = '';
+let activeFilePath = null;
+
+// Paths -> nested nodes. A folder holding a single sub-folder and nothing
+// else is merged into it, so `docs/design/notes` is one row rather than
+// three (GitHub does the same); deep source trees stay readable.
+function buildTree(files) {
+  const root = { name: '', path: '', dirs: new Map(), files: [] };
+  for (const f of files) {
+    const parts = String(f.path).split('/');
+    const name = parts.pop();
+    let node = root;
+    let acc = '';
+    for (const part of parts) {
+      acc = acc ? acc + '/' + part : part;
+      if (!node.dirs.has(part)) {
+        node.dirs.set(part, { name: part, path: acc, dirs: new Map(), files: [] });
+      }
+      node = node.dirs.get(part);
+    }
+    node.files.push({ name, file: f });
+  }
+  return compressTree(root);
+}
+
+// Depth-first, so a merged child is already compressed when it is folded
+// into its parent. The merged node keeps the deepest path as its key, so
+// fold state follows the row the reviewer actually clicked.
+function compressTree(node) {
+  const dirs = new Map();
+  for (const dir of node.dirs.values()) {
+    let d = compressTree(dir);
+    while (!d.files.length && d.dirs.size === 1) {
+      const only = d.dirs.values().next().value;
+      d = { name: d.name + '/' + only.name, path: only.path, dirs: only.dirs, files: only.files };
+    }
+    dirs.set(d.name, d);
+  }
+  node.dirs = dirs;
+  return node;
+}
+
+function countTreeFiles(node) {
+  let n = node.files.length;
+  for (const d of node.dirs.values()) n += countTreeFiles(d);
+  return n;
+}
+
+// Flattens the tree into display rows: folders before files, each side
+// alphabetical, children only while their folder is open.
+function treeRows(root, folded) {
+  const byName = (a, b) => a.name.localeCompare(b.name);
+  const out = [];
+  const walk = (node, depth) => {
+    for (const d of [...node.dirs.values()].sort(byName)) {
+      const open = !folded.has(d.path);
+      out.push({ type: 'dir', name: d.name, path: d.path, depth, open, count: countTreeFiles(d) });
+      if (open) walk(d, depth + 1);
+    }
+    for (const f of [...node.files].sort(byName)) {
+      out.push({ type: 'file', name: f.name, path: f.file.path, depth, file: f.file });
+    }
+  };
+  walk(root, 0);
+  return out;
+}
+
+function treeDirPaths(node, out = []) {
+  for (const d of node.dirs.values()) {
+    out.push(d.path);
+    treeDirPaths(d, out);
+  }
+  return out;
+}
+
+// Whitespace-separated substrings, all of which must appear in the path
+// (case-insensitive). Deliberately plain: no fuzzy matching, so what the
+// filter shows is always explainable from what was typed.
+function filterTokens(q) {
+  return String(q || '').toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+function matchesFilter(file, tokens) {
+  const hay = (file.path + ' ' + (file.oldPath || '')).toLowerCase();
+  return tokens.every((t) => hay.includes(t));
+}
+
+// Escaped file name with every filter hit wrapped in <mark>. Tokens that
+// only matched the folder part of the path simply don't mark anything.
+function markName(name, tokens) {
+  const lower = name.toLowerCase();
+  const hits = [];
+  for (const t of tokens) {
+    for (let i = lower.indexOf(t); i !== -1; i = lower.indexOf(t, i + 1)) hits.push([i, i + t.length]);
+  }
+  if (!hits.length) return esc(name);
+  hits.sort((a, b) => a[0] - b[0]);
+  const merged = [];
+  for (const [start, end] of hits) {
+    const last = merged[merged.length - 1];
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  let html = '';
+  let pos = 0;
+  for (const [start, end] of merged) {
+    html += esc(name.slice(pos, start)) + '<mark>' + esc(name.slice(start, end)) + '</mark>';
+    pos = end;
+  }
+  return html + esc(name.slice(pos));
+}
+
+const STATUS_LETTER = { added: 'A', deleted: 'D', renamed: 'R', modified: 'M' };
+
+function treeRowHtml(r, tokens, filtering) {
+  // Indent guides instead of a padding style attribute: the CSP forbids
+  // inline styles, and the rules double as GitHub's tree lines.
+  const indent = '<span class="tindent"></span>'.repeat(r.depth);
+  if (r.type === 'dir') {
+    const caret = `<span class="tcaret">${filtering ? '▾' : (r.open ? '▾' : '▸')}</span>`;
+    const body = `${indent}${caret}<span class="tname">${markName(r.name, tokens)}</span>`
+      + `<span class="tmeta">${r.count}</span>`;
+    // While filtering, folders are forced open (below), so a fold control
+    // there would be a button that does nothing.
+    return filtering
+      ? `<div class="trow dir static">${body}</div>`
+      : `<button class="trow dir" data-tdir="${esc(r.path)}" aria-expanded="${r.open}"
+          title="${esc(r.path)}">${body}</button>`;
+  }
+  const f = r.file;
+  const count = draftsFor(r.path).length;
+  const meta = (count ? `<span class="tcomments">☗ ${count}</span>` : '')
+    + (f.viewed ? '<span class="tviewed" title="Viewed">✓</span>' : '');
+  const letter = f.binary ? 'B' : (STATUS_LETTER[f.status] || 'M');
+  const title = `${f.oldPath && f.status === 'renamed' ? f.oldPath + ' → ' : ''}${f.path}`
+    + ` · +${f.additions} −${f.deletions}${f.binary ? ' · binary' : ''}`;
+  return `<button class="trow file${r.path === activeFilePath ? ' active' : ''}"
+      data-tfile="${esc(r.path)}" title="${esc(title)}">${indent}<span
+      class="tstatus s-${esc(f.status)}" aria-hidden="true">${letter}</span><span
+      class="tname">${markName(r.name, tokens)}</span><span class="tmeta">${meta}</span></button>`;
+}
+
+function renderTree() {
+  document.body.classList.toggle('tree-hidden', !treeShown);
+  const list = $('#tree-list');
+  const count = $('#tree-count');
+  if (!review) { list.innerHTML = ''; count.textContent = ''; return; }
+  const tokens = filterTokens(treeFilter);
+  const filtering = tokens.length > 0;
+  const files = filtering ? review.files.filter((f) => matchesFilter(f, tokens)) : review.files;
+  // A filter that hid its own hits behind a folded folder would be a lie:
+  // while filtering, everything that matched is shown. Fold state is kept
+  // and resumes the moment the box is cleared.
+  const rows = treeRows(buildTree(files), filtering ? new Set() : treeFolded);
+  list.innerHTML = rows.length
+    ? rows.map((r) => treeRowHtml(r, tokens, filtering)).join('')
+    : '<div class="tree-empty">No files match.</div>';
+  const total = review.files.length;
+  count.textContent = filtering
+    ? `${files.length} of ${total} file${total === 1 ? '' : 's'}`
+    : `${total} file${total === 1 ? '' : 's'}`;
+  // One control for both directions, labelled for whichever way it will go.
+  // It always acts on the whole tree, not just the filtered rows.
+  const dirs = treeDirPaths(buildTree(review.files));
+  const fold = $('#btn-tree-fold');
+  const anyOpen = dirs.some((d) => !treeFolded.has(d));
+  fold.hidden = dirs.length === 0;
+  fold.textContent = anyOpen ? '⊟' : '⊞';
+  fold.title = anyOpen ? 'Collapse all folders' : 'Expand all folders';
+  fold.setAttribute('aria-label', fold.title);
+}
+
+// The topbar toggle. Below MIN_TREE_PX the sidebar hides itself and the
+// button goes away with it (CSS), so the choice only matters when there is
+// room for a sidebar at all.
+function renderTreeToggle() {
+  const btn = $('#btn-tree');
+  btn.classList.toggle('on', treeShown);
+  btn.setAttribute('aria-pressed', treeShown ? 'true' : 'false');
+}
+
+function setTreeShown(on) {
+  treeShown = on;
+  try {
+    if (on) localStorage.removeItem(TREE_KEY);
+    else localStorage.setItem(TREE_KEY, '0');
+  } catch (_) { /* fine */ }
+  renderTreeToggle();
+  renderTree();
+  // Showing/hiding the sidebar changes how much room the diff has, which can
+  // flip split into inline and back (see wideEnough).
+  renderViewToggle();
+  if (review && diffView === 'split') renderFiles();
+  if (diffView === 'split' && !wideEnough()) toast(narrowMessage());
+}
+
+// Why split is rendering inline right now: a window too narrow either way,
+// or one that would have been wide enough without the sidebar's slice of it.
+function narrowedByTree() {
+  return treeVisible() && (!wideQuery || wideQuery.matches);
+}
+
+function narrowMessage() {
+  return narrowedByTree()
+    ? 'No room for two code columns beside the file tree — showing inline.'
+    : `The window is under ${MIN_SPLIT_PX}px — showing inline until it is wider.`;
+}
+
+function setActiveFile(path) {
+  if (path === activeFilePath) return;
+  activeFilePath = path;
+  for (const el of $('#tree-list').querySelectorAll('[data-tfile]')) {
+    el.classList.toggle('active', el.dataset.tfile === activeFilePath);
+  }
+}
+
+function jumpToFile(path) {
+  const sec = fileSections.get(path);
+  if (!sec) return;
+  // Fold state is the reviewer's; jumping to a file never changes it. The
+  // card's scroll-margin clears the sticky topbar.
+  sec.scrollIntoView({ block: 'start' });
+  setActiveFile(path);
+}
+
+// Which file card the reviewer is looking at — the first one whose bottom is
+// still below the sticky header. Cheap enough to run per scroll frame at
+// these file counts, and it needs no observers to survive re-renders.
+function syncActiveFromScroll() {
+  const top = ($('#topbar').offsetHeight || 43) + 8;
+  let current = null;
+  for (const [path, sec] of fileSections) {
+    if (sec.getBoundingClientRect().bottom > top) { current = path; break; }
+  }
+  // At the end of the page no card is "topmost" in any useful sense — the
+  // last one is what the reviewer is looking at, so it never goes unlit.
+  if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2) {
+    for (const path of fileSections.keys()) current = path;
+  }
+  if (current) setActiveFile(current);
 }
 
 /* -------------------------------------------------- review-level comment */
@@ -1118,6 +1397,72 @@ function wireEvents() {
     load(false);
   });
 
+  // ---- file tree (navigation only; nothing here edits the review) ----
+  const treeList = $('#tree-list');
+  treeList.addEventListener('click', (e) => {
+    const dir = e.target.closest('button[data-tdir]');
+    if (dir) {
+      const path = dir.dataset.tdir;
+      if (treeFolded.has(path)) treeFolded.delete(path);
+      else treeFolded.add(path);
+      renderTree();
+      return;
+    }
+    const file = e.target.closest('button[data-tfile]');
+    if (file) jumpToFile(file.dataset.tfile);
+  });
+
+  const search = $('#tree-search');
+  search.addEventListener('input', () => {
+    treeFilter = search.value;
+    renderTree();
+  });
+  search.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      // esc empties the box first, and only then gives up the focus.
+      if (search.value) { search.value = ''; treeFilter = ''; renderTree(); }
+      else search.blur();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const first = treeList.querySelector('button[data-tfile]');
+      if (first) jumpToFile(first.dataset.tfile);
+    }
+  });
+
+  $('#btn-tree-fold').addEventListener('click', () => {
+    if (!review) return;
+    const dirs = treeDirPaths(buildTree(review.files));
+    // One control, whichever way there is more to do: fold everything while
+    // any folder is open, otherwise open everything back up.
+    if (dirs.some((d) => !treeFolded.has(d))) dirs.forEach((d) => treeFolded.add(d));
+    else treeFolded.clear();
+    renderTree();
+  });
+
+  $('#btn-tree').addEventListener('click', () => setTreeShown(!treeShown));
+
+  // `/` jumps to the filter box, the way it does in most file trees — but
+  // never while typing a comment.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return;
+    const t = e.target;
+    const tag = t && t.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || (t && t.isContentEditable)) return;
+    if (!roomForTree()) return; // no sidebar at this width
+    e.preventDefault();
+    if (!treeShown) setTreeShown(true);
+    search.focus();
+    search.select();
+  });
+
+  // Keep the tree's highlight on the file card being read.
+  let spyQueued = false;
+  document.addEventListener('scroll', () => {
+    if (spyQueued || !review) return;
+    spyQueued = true;
+    raf(() => { spyQueued = false; syncActiveFromScroll(); });
+  }, { passive: true });
+
   $('#btn-refresh').addEventListener('click', () => load(true));
   $('#btn-stale-refresh').addEventListener('click', () => load(true));
   $('#btn-collapse-all').addEventListener('click', () => setAllCollapsed(true));
@@ -1292,9 +1637,12 @@ function renderViewToggle() {
     b.classList.toggle('on', on);
     b.setAttribute('aria-pressed', on ? 'true' : 'false');
     if (b.dataset.view === 'split') {
-      b.title = narrowed
-        ? `Side-by-side — the window is under ${MIN_SPLIT_PX}px, so the diff shows inline`
-        : 'Side-by-side diff: old on the left, new on the right';
+      b.title = !narrowed
+        ? 'Side-by-side diff: old on the left, new on the right'
+        : narrowedByTree()
+          ? 'Side-by-side — no room beside the file tree, so the diff shows inline;'
+            + ' hide the tree or widen the window'
+          : `Side-by-side — the window is under ${MIN_SPLIT_PX}px, so the diff shows inline`;
     }
   }
 }
@@ -1308,20 +1656,22 @@ viewToggle.addEventListener('click', (e) => {
   } catch (_) { /* fine */ }
   renderViewToggle();
   if (review) renderFiles();
-  if (diffView === 'split' && !wideEnough()) {
-    toast(`The window is under ${MIN_SPLIT_PX}px — showing inline until it is wider.`);
-  }
+  if (diffView === 'split' && !wideEnough()) toast(narrowMessage());
 });
-// Crossing the width threshold re-renders the working diff in place; forms and
+// Crossing a width threshold re-renders the working diff in place; forms and
 // expansions live in fileUI, so nothing is lost. Audit-trail diffs already on
-// screen keep their shape until they are collapsed and reopened.
-if (wideQuery) {
-  wideQuery.addEventListener('change', () => {
+// screen keep their shape until they are collapsed and reopened. All three
+// queries matter: whether split fits depends on the window *and* on whether
+// the sidebar is up (and the sidebar hides itself below MIN_TREE_PX).
+for (const q of [wideQuery, wideTreeQuery, treeQuery]) {
+  if (!q) continue;
+  q.addEventListener('change', () => {
     renderViewToggle();
     if (diffView === 'split' && review) renderFiles();
   });
 }
 renderViewToggle();
+renderTreeToggle();
 
 $('#settings').addEventListener('toggle', () => {
   if ($('#settings').open) fontInput.focus();
