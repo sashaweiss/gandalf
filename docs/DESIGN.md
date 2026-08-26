@@ -129,6 +129,12 @@ review can show only what changed since.
   personal font in the repo) and holds the ignore-whitespace toggle. The
   gear is an inline SVG (stroke `currentColor`), keeping the no-external-
   assets rule.
+- Every **disclosure control** — file cards, tree folders, audit-trail
+  revisions — draws the same inline chevron (`caretSvg`, stroke
+  `currentColor`) and points it by rotating it in CSS off the container's
+  state (`section.file.collapsed`, `.trow.dir.folded`,
+  `details.revision:not([open])`). Folding is therefore always a class
+  toggle, never swapped markup, and there is one glyph to restyle.
 
 ## File tree (left sidebar)
 

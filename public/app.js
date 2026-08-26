@@ -451,6 +451,14 @@ function hunkHeadHtml(file, r, readOnly, cols) {
   </div></td></tr>`;
 }
 
+// One chevron for every disclosure control (file cards, tree folders). Which
+// way it points is decided by the container's collapsed/folded class, so a
+// fold is a class toggle and never swapped markup.
+const caretSvg = (size) => `<svg class="caret-icon" width="${size}" height="${size}"`
+  + ' viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"'
+  + ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<path d="M6 9l6 6 6-6"/></svg>';
+
 function fileStageControls(file) {
   const s = file.stagedState;
   if (s == null) return '';
@@ -475,7 +483,7 @@ function buildFileSection(file, comments, ui, opts) {
   const viewed = !readOnly && !!file.viewed;
   parts.push(`<section class="file${ui.collapsed ? ' collapsed' : ''}${viewed ? ' viewed' : ''}" data-path="${esc(file.path)}">`);
   parts.push(`<header class="file-header">
-    <button class="caret" data-fold title="${ui.collapsed ? 'Expand file' : 'Collapse file'}">${ui.collapsed ? '▸' : '▾'}</button>
+    <button class="caret" data-fold title="${ui.collapsed ? 'Expand file' : 'Collapse file'}">${caretSvg(16)}</button>
     <span class="file-path">${pathHtml}</span>${chip}
     <span class="stats"><span class="stat-add">+${file.additions}</span> <span class="stat-del">−${file.deletions}</span></span>
     ${comments.length ? `<span class="file-comment-count">☗ ${comments.length}</span>` : ''}
@@ -784,15 +792,15 @@ function treeRowHtml(r, tokens, filtering) {
   // inline styles, and the rules double as GitHub's tree lines.
   const indent = '<span class="tindent"></span>'.repeat(r.depth);
   if (r.type === 'dir') {
-    const caret = `<span class="tcaret">${filtering ? '▾' : (r.open ? '▾' : '▸')}</span>`;
-    const body = `${indent}${caret}<span class="tname">${markName(r.name, tokens)}</span>`
+    const body = `${indent}<span class="tcaret">${caretSvg(14)}</span>`
+      + `<span class="tname">${markName(r.name, tokens)}</span>`
       + `<span class="tmeta">${r.count}</span>`;
     // While filtering, folders are forced open (below), so a fold control
     // there would be a button that does nothing.
     return filtering
       ? `<div class="trow dir static">${body}</div>`
-      : `<button class="trow dir" data-tdir="${esc(r.path)}" aria-expanded="${r.open}"
-          title="${esc(r.path)}">${body}</button>`;
+      : `<button class="trow dir${r.open ? '' : ' folded'}" data-tdir="${esc(r.path)}"
+          aria-expanded="${r.open}" title="${esc(r.path)}">${body}</button>`;
   }
   const f = r.file;
   const count = draftsFor(r.path).length;
@@ -967,6 +975,7 @@ function renderHistory() {
     d.className = 'revision';
     const when = new Date(meta.submittedAt).toLocaleString();
     d.innerHTML = `<summary>
+      <span class="rev-caret">${caretSvg(14)}</span>
       <span class="rev-title">Review r${meta.revision}</span>
       <span class="muted">${esc(when)} · ${meta.commentCount
         ? `${meta.commentCount} comment${meta.commentCount === 1 ? '' : 's'}`
@@ -1379,7 +1388,6 @@ function wireEvents() {
     const fold = e.target.closest('button[data-fold]');
     if (!fold) return;
     const collapsed = fold.closest('section.file').classList.toggle('collapsed');
-    fold.textContent = collapsed ? '▸' : '▾';
     fold.title = collapsed ? 'Expand file' : 'Collapse file';
   });
 

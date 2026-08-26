@@ -376,11 +376,22 @@ button.tree-icon:hover { color: var(--accent); }
 .trow.file.active { background: var(--sel-bg); }
 .tindent {
   flex: none;
-  width: 11px;
+  width: 14px;
   align-self: stretch;
   border-left: 1px solid var(--border-soft);
 }
-.tcaret { flex: none; width: 11px; color: var(--muted); font-size: 10px; }
+/* Same width as an indent guide, so a folder's chevron sits exactly one step
+   left of the names under it. */
+.tcaret {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+.trow.dir:hover .tcaret { color: var(--accent); }
 .tname {
   flex: 1;
   min-width: 0;
@@ -478,8 +489,15 @@ details.revision > summary {
   gap: 10px;
   align-items: baseline;
 }
-details.revision > summary::before { content: "▸"; color: var(--muted); }
-details.revision[open] > summary::before { content: "▾"; }
+details.revision > summary .rev-caret {
+  flex: none;
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+  /* summary rows are baseline-aligned; nudge the glyph onto the text. */
+  align-self: center;
+}
+details.revision:not([open]) > summary .caret-icon { transform: rotate(-90deg); }
 details.revision > summary .rev-title { font-weight: 600; }
 details.revision .rev-body { padding: 4px 12px 12px; border-top: 1px solid var(--border-soft); }
 details.revision .rev-note { color: var(--muted); font-size: 13px; margin: 8px 0; }
@@ -556,16 +574,32 @@ section.file.collapsed .file-comments { display: none; }
 
 button.caret {
   flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-left: -3px;
   border: none;
+  border-radius: 6px;
   background: none;
-  width: 20px;
-  padding: 0 2px;
+  padding: 0;
   color: var(--muted);
-  font-size: 12px;
-  line-height: 1;
   cursor: pointer;
 }
-button.caret:hover { color: var(--accent); }
+button.caret:hover { color: var(--accent); background: var(--border-soft); }
+
+/* The chevron points down when open and swings right when the container is
+   collapsed — one glyph, rotated, so folding is only ever a class toggle. */
+.caret-icon {
+  display: block;
+  transition: transform 120ms ease;
+}
+section.file.collapsed .caret-icon,
+.trow.dir.folded .caret-icon { transform: rotate(-90deg); }
+@media (prefers-reduced-motion: reduce) {
+  .caret-icon { transition: none; }
+}
 
 label.viewed-toggle {
   margin-left: auto;
