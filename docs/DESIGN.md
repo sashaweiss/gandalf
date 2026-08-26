@@ -65,6 +65,7 @@ review can show only what changed since.
 | `/api/drafts` | POST | Replace the draft set (autosave, debounced 400 ms) |
 | `/api/viewed` | POST | `{path, sig, viewed}` — persist a Viewed mark |
 | `/api/submit` | POST | Finish review: snapshot, markdown, clear drafts |
+| `/api/reset-history` | POST | `{scope: "branch"\|"all"}` — delete submitted reviews + snapshots, keep drafts |
 | `/api/stage` | POST | Stage/unstage file or hunk (needs writable `.git`) |
 
 ## Diff scope & rendering
@@ -281,6 +282,25 @@ answer "what changed since my last review". Instead:
   the full view with a toast.
 - Viewed marks share one per-path signature map across views; any change to
   a file invalidates its mark in both.
+
+### Wiping review history
+
+Git surgery — a rebase, a reset, a re-created branch — can leave the
+snapshots the "since review rN" baselines diff against describing a tree that
+no longer exists. **Wipe review history** (gear panel → its own confirmation
+dialog → `POST /api/reset-history {scope: "branch"|"all"}`) deletes
+`revisions/` and empties the revision index for the current branch, or for
+every branch under `branches/`, and removes `pending-review.md` so no agent
+can act on a review that no longer exists.
+
+- **Drafts and Viewed marks are kept**, always and in both scopes: they are
+  the review in progress, not history. That is the one rule the dialog states.
+- Numbering restarts at r1; the baseline picker and audit trail disappear and
+  the page falls back to the full diff (the client also drops its remembered
+  baseline, so other tabs land on the existing "no snapshot for rN" fallback).
+- Deliberately behind the gear, behind a confirmation, with no keyboard
+  shortcut and no undo — it is the only action in the tool that destroys
+  state. A wipe with nothing to delete is not an error; it says so.
 
 ## Finishing & the agent handoff
 

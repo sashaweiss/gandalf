@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -707,6 +708,46 @@ def write_state(state_root, branch, state):
     write_json_atomic(branch_dir(state_root, branch) / "state.json", state)
 
 
+def wipe_history(state_root, branch, all_branches):
+    """Delete submitted reviews and their content snapshots — for when git
+    surgery (rebase, reset, re-created branch) makes the "since review rN"
+    baselines meaningless. Drafts and Viewed marks are deliberately kept:
+    they are the review in progress, not history. Returns what was removed."""
+    root = Path(state_root) / "branches"
+    if all_branches:
+        dirs = sorted(p for p in root.iterdir() if p.is_dir()) if root.is_dir() else []
+    else:
+        d = branch_dir(state_root, branch)
+        dirs = [d] if d.is_dir() else []
+    reviews = 0
+    branches = 0
+    for d in dirs:
+        sp = d / "state.json"
+        state = None
+        if sp.exists():
+            try:
+                state = json.loads(sp.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                state = None  # unreadable state: still drop the revisions
+        n = len((state or {}).get("revisions") or [])
+        revdir = d / "revisions"
+        had_dir = revdir.is_dir()
+        if not had_dir and not n:
+            continue
+        if had_dir:
+            shutil.rmtree(revdir)
+        if state is not None:
+            state["revisions"] = []
+            write_json_atomic(sp, state)
+        reviews += n
+        branches += 1
+    # The handoff file describes the latest submitted review; once that review
+    # is gone, an agent must not still be able to act on it.
+    (Path(state_root) / "pending-review.md").unlink(missing_ok=True)
+    (Path(state_root) / "pending-review.json").unlink(missing_ok=True)
+    return {"reviews": reviews, "branches": branches}
+
+
 def now_iso():
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
@@ -922,6 +963,8 @@ def make_handler(repo, base, state_root, excludes, skip_prefixes):
                     return self.api_stage()
                 if route == "/api/viewed":
                     return self.api_viewed()
+                if route == "/api/reset-history":
+                    return self.api_reset_history()
                 self.send_error_json("not found", 404)
             except GitError as e:
                 self.send_error_json(f"git: {e}", 500)
@@ -1051,6 +1094,16 @@ def make_handler(repo, base, state_root, excludes, skip_prefixes):
                     viewed_map.pop(path_, None)
                 write_state(state_root, branch, state)
             self.send_json({"ok": True})
+
+        def api_reset_history(self):
+            payload = self.read_body_json()
+            scope = payload.get("scope")
+            if scope not in ("branch", "all"):
+                return self.send_error_json('expected {scope: "branch"|"all"}', 400)
+            branch = current_branch(repo)
+            with STATE_LOCK:
+                stats = wipe_history(state_root, branch, scope == "all")
+            self.send_json({"ok": True, **stats})
 
         def api_submit(self):
             payload = self.read_body_json()

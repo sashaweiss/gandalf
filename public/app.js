@@ -1372,6 +1372,12 @@ function wireEvents() {
     }
   });
 
+  // Destructive, so it lives behind the gear and its own confirmation, and
+  // takes a real click — no keyboard shortcut.
+  $('#btn-wipe-history').addEventListener('click', openResetDialog);
+  $('#btn-reset-confirm').addEventListener('click', resetHistory);
+  $('#btn-reset-cancel').addEventListener('click', () => $('#reset-dialog').close());
+
   $('#history-list').addEventListener('click', async (e) => {
     // "Copy for agent" sits inside the <summary>: stop the toggle.
     const rcopy = e.target.closest('button[data-rcopy]');
@@ -1503,6 +1509,43 @@ async function stageAction(body) {
     toast(body.action.replace('-', 'd ') + '.');
   } catch (e) {
     toast('Staging failed (writable .git required): ' + e.message);
+  }
+}
+
+// Wiping review history is the escape hatch for git surgery: after a rebase,
+// reset or re-created branch, the snapshots the "since review rN" baselines
+// diff against describe a tree that no longer exists. Drafts and Viewed
+// marks survive — they are the review in progress, not history.
+function openResetDialog() {
+  const n = (review && review.revisions ? review.revisions.length : 0);
+  const branch = `<code>${esc(review ? review.branch : '?')}</code>`;
+  $('#reset-dialog-sub').innerHTML = n
+    ? `Deletes the ${n} review${n === 1 ? '' : 's'} on ${branch} —`
+      + ` ${n === 1 ? 'its' : 'their'} snapshots, the`
+      + ' audit trail and every “since review” baseline. The next review starts again'
+      + ' at r1, and the <code>.gandalf/pending-review.md</code> handoff is cleared.'
+    : `${branch} has no finished reviews. Wiping still clears the`
+      + ' <code>.gandalf/pending-review.md</code> handoff — and, with the box below'
+      + ' ticked, every other branch’s review history.';
+  $('#reset-all-branches').checked = false;
+  $('#settings').open = false;
+  $('#reset-dialog').showModal();
+}
+
+async function resetHistory() {
+  const scope = $('#reset-all-branches').checked ? 'all' : 'branch';
+  $('#reset-dialog').close();
+  try {
+    const res = await postJson('/api/reset-history', { scope });
+    // Every baseline just stopped existing; the full diff is the only view left.
+    setBaseline(null);
+    await load(false);
+    toast(res.reviews
+      ? `Wiped ${res.reviews} review${res.reviews === 1 ? '' : 's'}`
+        + (scope === 'all' ? ` across ${res.branches} branch${res.branches === 1 ? '' : 'es'}.` : '.')
+      : 'No review history to wipe.');
+  } catch (e) {
+    toast('Could not wipe review history: ' + e.message);
   }
 }
 

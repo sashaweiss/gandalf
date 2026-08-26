@@ -102,6 +102,23 @@ button.primary, #btn-submit {
   border-color: var(--accent);
   font-weight: 600;
 }
+/* Destructive actions: outlined in the settings panel, filled in the
+   confirmation dialog where the click actually does the damage. */
+button.danger-outline {
+  width: 100%;
+  color: var(--danger);
+  border-color: var(--danger);
+  background: transparent;
+}
+button.danger-outline:hover { background: var(--del-bg); border-color: var(--danger); }
+button.danger {
+  color: #fff;
+  background: var(--danger);
+  border-color: var(--danger);
+  font-weight: 600;
+}
+button.danger:hover { border-color: var(--danger); filter: brightness(1.08); }
+
 button.danger-link, button.plain-link {
   border: none;
   background: none;
@@ -278,6 +295,15 @@ button.icon-btn.on { color: var(--accent); border-color: var(--border); }
   padding: 5px 8px;
 }
 .settings-hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+.settings-sep {
+  border: none;
+  border-top: 1px solid var(--border-soft);
+  margin: 14px 0 12px;
+}
+
+/* The wipe confirmation borrows this panel's checkbox row. */
+#reset-dialog .settings-check { margin: 4px 0 0; }
+#reset-dialog .settings-hint { margin: 6px 0 14px; }
 
 main {
   max-width: var(--page-max);
@@ -841,8 +867,8 @@ tr.crow > td { padding: 6px 8px 6px 46px; background: var(--panel); }
 /* binary / empty notices inside a file card */
 .file-note { padding: 10px 14px; color: var(--muted); font-style: italic; }
 
-/* ---- finish-review dialogs ---- */
-#review-dialog, #finish-dialog {
+/* ---- dialogs (finish review, feedback, wipe history) ---- */
+#review-dialog, #finish-dialog, #reset-dialog {
   width: min(720px, calc(100vw - 48px));
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -850,8 +876,11 @@ tr.crow > td { padding: 6px 8px 6px 46px; background: var(--panel); }
   color: var(--text);
   padding: 18px 20px;
 }
-#review-dialog::backdrop, #finish-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
-#review-dialog h2, #finish-dialog h2 { margin: 0 0 6px; font-size: 17px; }
+#review-dialog::backdrop, #finish-dialog::backdrop,
+#reset-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+#review-dialog h2, #finish-dialog h2, #reset-dialog h2 { margin: 0 0 6px; font-size: 17px; }
+/* A confirmation needs no room for a diff. */
+#reset-dialog { width: min(480px, calc(100vw - 48px)); }
 .dialog-label { display: block; font-weight: 600; font-size: 14px; margin: 0 0 6px; }
 .dialog-label .muted { font-weight: 400; }
 #finish-overall {

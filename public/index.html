@@ -30,6 +30,9 @@
         <p class="settings-hint">Used for diffs on this machine. If the font isn't installed, the system monospace is used.</p>
         <label class="settings-check"><input type="checkbox" id="ws-toggle"> Ignore whitespace changes</label>
         <p class="settings-hint">Whitespace-only changes are hidden and hunk staging is disabled while on.</p>
+        <hr class="settings-sep">
+        <button id="btn-wipe-history" class="danger-outline">Wipe review history…</button>
+        <p class="settings-hint">Deletes past reviews and their snapshots.</p>
       </div>
     </details>
     <button id="btn-collapse-all" class="ghost" title="Collapse every file">Collapse all</button>
@@ -80,6 +83,18 @@
     <span class="form-hint">⌘⏎ finish · esc keeps the text for later</span>
     <button id="btn-finish-confirm" class="primary">Finish review</button>
     <button id="btn-finish-cancel">Cancel</button>
+  </div>
+</dialog>
+
+<dialog id="reset-dialog">
+  <h2>Wipe review history?</h2>
+  <p class="dialog-sub" id="reset-dialog-sub"></p>
+  <label class="settings-check"><input type="checkbox" id="reset-all-branches">
+    Every branch, not just this one</label>
+  <p class="settings-hint">Drafts and Viewed marks are kept. This cannot be undone.</p>
+  <div class="dialog-actions">
+    <button id="btn-reset-confirm" class="danger">Wipe history</button>
+    <button id="btn-reset-cancel">Cancel</button>
   </div>
 </dialog>
 

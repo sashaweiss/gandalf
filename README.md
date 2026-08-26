@@ -36,6 +36,10 @@ it. Submitting a review provides you with copyable feedback, addressed and self-
 
 Submitting a review "checkpoints" changes, such that your next review will show the diff *since the last review*, regardless of git commits. The review base is configurable.
 
+If git surgery (a rebase, a reset, a re-created branch) makes those checkpoints
+meaningless, **Wipe review history** in the gear menu deletes past reviews and
+their baselines — in-progress drafts are kept.
+
 ## Resources
 
 Detailed behavior, design decisions, and invariants live in [docs/](docs/).
