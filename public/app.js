@@ -140,11 +140,18 @@ function scheduleDraftSave() {
   clearTimeout(draftSaveTimer);
   draftSaveTimer = setTimeout(flushDrafts, 400);
 }
-function flushDrafts() {
+// `keepalive` lets the request outlive the page — on pagehide a normal fetch
+// is cancelled mid-flight and the drafts would never land.
+function flushDrafts(keepalive) {
   if (draftSaveTimer === null) return Promise.resolve();
   clearTimeout(draftSaveTimer);
   draftSaveTimer = null;
-  return postJson('/api/drafts', { drafts }).catch((e) => toast('Draft save failed: ' + e.message));
+  return api('/api/drafts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ drafts }),
+    keepalive: !!keepalive,
+  }).catch((e) => toast('Draft save failed: ' + e.message));
 }
 
 /* --------------------------------------------------- display-row building */
@@ -1073,7 +1080,7 @@ function openForm(path, startDi, endDi, col) {
 // it. Non-empty text becomes (or updates) a draft marked unfinished (`wip`);
 // the reviewer resumes via Edit, and a real save clears the marker. Explicit
 // Cancel/esc still discards — this guards the implicit paths only (opening
-// another comment, marking Viewed, Refresh, finishing).
+// another comment, marking Viewed, refreshing, leaving the page, finishing).
 function stashForm(path) {
   const ui = getUI(path);
   const f = ui.form;
@@ -1477,8 +1484,16 @@ function wireEvents() {
     raf(() => { spyQueued = false; syncActiveFromScroll(); });
   }, { passive: true });
 
-  $('#btn-refresh').addEventListener('click', () => load(true));
   $('#btn-stale-refresh').addEventListener('click', () => load(true));
+
+  // Reloading the page is the way to re-read the working tree (there is no
+  // Refresh button), so make a reload as safe as that button was: stash any
+  // open form as an unfinished draft and send the pending save with a
+  // request that outlives the page.
+  window.addEventListener('pagehide', () => {
+    stashAllForms();
+    flushDrafts(true);
+  });
   $('#btn-collapse-all').addEventListener('click', () => setAllCollapsed(true));
   $('#btn-expand-all').addEventListener('click', () => setAllCollapsed(false));
   $('#btn-submit').addEventListener('click', openFinishDialog);

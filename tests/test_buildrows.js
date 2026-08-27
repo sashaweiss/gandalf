@@ -19,6 +19,7 @@ const ctx = {
     createElement: () => stubEl(),
     documentElement: { style: { setProperty() {} } },
   },
+  window: { addEventListener() {} },
   ResizeObserver: class { observe() {} },
   getComputedStyle: () => ({ getPropertyValue: () => '' }),
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },

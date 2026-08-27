@@ -192,8 +192,8 @@ revisions (read-only history) never appear in it.
   reloads.
 - **Half-written comments are never lost implicitly** (`stashForm`): when an
   open form would be replaced — opening another comment, clicking Edit
-  elsewhere, marking the file Viewed, Refresh/view switches, or opening the
-  Finish dialog — non-empty text is stashed as a draft marked `wip`
+  elsewhere, marking the file Viewed, a Refresh or view switch, leaving the
+  page (`pagehide`), or opening the Finish dialog — non-empty text is stashed as a draft marked `wip`
   (dashed box, "unfinished — Edit to continue"; while editing an existing
   comment, its text is updated and flagged instead). Edit resumes; a real
   save clears the flag. Explicit `esc`/Cancel still discards. The Finish
@@ -341,6 +341,12 @@ The page polls `/api/status` every 4 s (only while visible). The fingerprint
 hashes the base diff, cached diff, untracked *names*, and HEAD — note it does
 not hash untracked file *contents* (known limitation). On drift, the sticky
 banner offers Refresh; nothing reloads by itself.
+
+There is no topbar Refresh button: a plain page reload re-reads the working
+tree, and the banner's button covers the one moment the reviewer needs to be
+told to. So that a reload is exactly as safe as that button was, `pagehide`
+stashes any open form as an unfinished draft and sends the pending draft save
+with `keepalive` (a normal fetch is cancelled as the page goes away).
 
 ## State layout (`<repo root>/.gandalf/`)
 
