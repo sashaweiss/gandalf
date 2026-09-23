@@ -687,8 +687,8 @@ let activeFilePath = null;
 // else is merged into it, so `docs/design/notes` is one row rather than
 // three (GitHub does the same); deep source trees stay readable.
 function buildTree(files) {
-  const root = { name: '', path: '', dirs: new Map(), files: [] };
-  for (const f of files) {
+  const root = { name: '', path: '', dirs: new Map(), files: [], order: 0 };
+  files.forEach((f, order) => {
     const parts = String(f.path).split('/');
     const name = parts.pop();
     let node = root;
@@ -696,12 +696,12 @@ function buildTree(files) {
     for (const part of parts) {
       acc = acc ? acc + '/' + part : part;
       if (!node.dirs.has(part)) {
-        node.dirs.set(part, { name: part, path: acc, dirs: new Map(), files: [] });
+        node.dirs.set(part, { name: part, path: acc, dirs: new Map(), files: [], order });
       }
       node = node.dirs.get(part);
     }
-    node.files.push({ name, file: f });
-  }
+    node.files.push({ name, file: f, order });
+  });
   return compressTree(root);
 }
 
@@ -714,7 +714,10 @@ function compressTree(node) {
     let d = compressTree(dir);
     while (!d.files.length && d.dirs.size === 1) {
       const only = d.dirs.values().next().value;
-      d = { name: d.name + '/' + only.name, path: only.path, dirs: only.dirs, files: only.files };
+      d = {
+        name: d.name + '/' + only.name, path: only.path,
+        dirs: only.dirs, files: only.files, order: d.order,
+      };
     }
     dirs.set(d.name, d);
   }
@@ -728,19 +731,25 @@ function countTreeFiles(node) {
   return n;
 }
 
-// Flattens the tree into display rows: folders before files, each side
-// alphabetical, children only while their folder is open.
+// Flattens the tree into display rows, children only while their folder is
+// open. Folders and files interleave in `review.files` order — a folder
+// sorts by its first file — so the tree reads top-to-bottom in the same
+// order as the diff cards.
 function treeRows(root, folded) {
-  const byName = (a, b) => a.name.localeCompare(b.name);
+  const byOrder = (a, b) => a.order - b.order;
   const out = [];
   const walk = (node, depth) => {
-    for (const d of [...node.dirs.values()].sort(byName)) {
-      const open = !folded.has(d.path);
-      out.push({ type: 'dir', name: d.name, path: d.path, depth, open, count: countTreeFiles(d) });
-      if (open) walk(d, depth + 1);
-    }
-    for (const f of [...node.files].sort(byName)) {
-      out.push({ type: 'file', name: f.name, path: f.file.path, depth, file: f.file });
+    const kids = [...node.dirs.values(), ...node.files].sort(byOrder);
+    for (const k of kids) {
+      if (!k.file) {
+        const open = !folded.has(k.path);
+        out.push({
+          type: 'dir', name: k.name, path: k.path, depth, open, count: countTreeFiles(k),
+        });
+        if (open) walk(k, depth + 1);
+      } else {
+        out.push({ type: 'file', name: k.name, path: k.file.path, depth, file: k.file });
+      }
     }
   };
   walk(root, 0);

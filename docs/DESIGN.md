@@ -149,9 +149,9 @@ revisions (read-only history) never appear in it.
   tree, labelled for whichever direction it will go). A folder holding a
   single sub-folder and nothing else is merged into it, so `docs/design` is
   one row; the merged row is keyed by its deepest path, so folding it hides
-  exactly what it shows. Folders sort before files, each alphabetically —
-  which is why tree order differs slightly from the card order below (git's
-  plain path sort).
+  exactly what it shows. Folders and files interleave in `review.files`
+  order, a folder sorting by its first file, so the tree reads top-to-bottom
+  in the same order as the cards below (git's plain path sort).
 - **Filter box**: whitespace-separated substrings, *all* of which must appear
   in the path (a rename's old path counts too), case-insensitive. Not fuzzy,
   deliberately — what the filter shows is always explainable from what was

@@ -58,24 +58,24 @@ const files = [
 const rows = (fs_, folded) => treeRows(buildTree(fs_), folded || new Set())
   .map((r) => r.type[0] + ':' + (r.type === 'dir' ? r.name : r.path) + '@' + r.depth);
 
-// Folders first (alphabetical), then files; a lone sub-folder chain is one row.
-eq('rows: folders before files, chain compressed', rows(files), [
-  'd:docs/design@0', 'f:docs/design/notes.md@1',
-  'd:public@0', 'f:public/app.js@1', 'f:public/style.css@1',
-  'd:tests@0', 'f:tests/test_filetree.js@1',
+// Rows follow the order of the files array; a lone sub-folder chain is one row.
+eq('rows: file order preserved, chain compressed', rows(files), [
   'f:README.md@0',
+  'd:public@0', 'f:public/app.js@1', 'f:public/style.css@1',
+  'd:docs/design@0', 'f:docs/design/notes.md@1',
+  'd:tests@0', 'f:tests/test_filetree.js@1',
 ]);
 
 // The compressed row is keyed by its deepest path, so folding it hides the
 // files under it and nothing else.
 eq('folding a compressed folder hides its files', rows(files, new Set(['docs/design'])), [
-  'd:docs/design@0',
-  'd:public@0', 'f:public/app.js@1', 'f:public/style.css@1',
-  'd:tests@0', 'f:tests/test_filetree.js@1',
   'f:README.md@0',
+  'd:public@0', 'f:public/app.js@1', 'f:public/style.css@1',
+  'd:docs/design@0',
+  'd:tests@0', 'f:tests/test_filetree.js@1',
 ]);
 
-const dirRow = treeRows(buildTree(files), new Set())[0];
+const dirRow = treeRows(buildTree(files), new Set())[4];
 check('folder rows carry a file count', dirRow.count === 1, JSON.stringify(dirRow.count));
 eq('folder paths are the fold keys', treeDirPaths(buildTree(files)).sort(),
   ['docs/design', 'public', 'tests']);
@@ -83,7 +83,14 @@ eq('folder paths are the fold keys', treeDirPaths(buildTree(files)).sort(),
 // A folder with files *and* one sub-folder is not merged.
 eq('a folder with its own files is not merged',
   rows([f('a/x.js'), f('a/b/y.js')]),
-  ['d:a@0', 'd:b@1', 'f:a/b/y.js@2', 'f:a/x.js@1']);
+  ['d:a@0', 'f:a/x.js@1', 'd:b@1', 'f:a/b/y.js@2']);
+
+// A folder sorts by its first file, so a file that git lists before the
+// folder's contents stays above it (the /util case from the screenshot).
+eq('a sibling file listed before a folder stays above it',
+  rows([f('Signal/Signal-Info.plist'), f('Signal/util/ScreenLockUI.swift')]),
+  ['d:Signal@0', 'f:Signal/Signal-Info.plist@1',
+    'd:util@1', 'f:Signal/util/ScreenLockUI.swift@2']);
 
 // ---- filtering ----
 eq('tokens split on whitespace', filterTokens('  Public  STYLE '), ['public', 'style']);
