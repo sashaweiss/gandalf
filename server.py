@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Gandalf — a local, zero-dependency review UI for an agent's working-tree changes.
+Gandalf — a local, zero-dependency review UI for an agent's working-tree
+changes and commits.
 
 Run:  gandalf [--repo /path/to/repo] [--base HEAD] [--port 4633] [--state-dir DIR]
 Then open http://127.0.0.1:4633
 
 - Serves the static UI from ./public (plain HTML/CSS/JS, no external requests).
-- Reads the diff of the working tree vs. a base ref (default HEAD) using
-  read-only git commands (works with a read-only .git mount).
+- Reads the diff of the working tree vs. a base ref (default HEAD), or of
+  single commits, using read-only git commands (works with a read-only .git
+  mount; review snapshots go to a private object store under the state dir).
 - The reviewed repo defaults to the git repo containing the current directory.
 - State (drafts, submitted reviews, the agent handoff file) lives in
   <repo root>/.gandalf/, regardless of the subdirectory you launched from —
@@ -15,7 +17,6 @@ Then open http://127.0.0.1:4633
 """
 
 import argparse
-import base64
 import hashlib
 import json
 import os
@@ -24,7 +25,6 @@ import shutil
 import subprocess
 import tempfile
 import threading
-import zlib
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -51,19 +51,52 @@ class GitError(Exception):
     pass
 
 
-def run_git(repo, args, input_bytes=None):
+class ViewError(Exception):
+    """The requested view can't be shown (e.g. its snapshot is gone)."""
+
+
+# Query parameters that pick a view (see collect_view).
+VIEW_PARAMS = ("since", "commit", "all")
+
+
+def run_git(repo, args, input_bytes=None, env=None):
     proc = subprocess.run(
         ["git", "--no-optional-locks", "-C", str(repo)] + list(args),
         capture_output=True,
         input=input_bytes,
+        env={**os.environ, **env} if env else None,
     )
     if proc.returncode != 0:
         raise GitError(proc.stderr.decode("utf-8", "replace").strip() or f"git {args[0]} failed")
     return proc.stdout
 
 
-def run_git_text(repo, args):
-    return run_git(repo, args).decode("utf-8", "replace")
+def run_git_text(repo, args, env=None):
+    return run_git(repo, args, env=env).decode("utf-8", "replace")
+
+
+SHA_RE = re.compile(r"[0-9a-f]{4,64}")
+
+
+def is_sha(s):
+    """Guards anything client-supplied before it reaches git's argv."""
+    return isinstance(s, str) and SHA_RE.fullmatch(s) is not None
+
+
+def rev_parse(repo, ref):
+    """Full object name of a commit, or None."""
+    try:
+        return run_git_text(repo, ["rev-parse", "--verify", "-q", f"{ref}^{{commit}}"]).strip()
+    except GitError:
+        return None
+
+
+def is_ancestor(repo, sha, of="HEAD"):
+    try:
+        run_git(repo, ["merge-base", "--is-ancestor", sha, of])
+        return True
+    except GitError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -334,49 +367,22 @@ def collect_review(repo, base, excludes, skip_prefixes, raws=None, ignore_ws=Fal
     return files, raws
 
 
-def finalize_files(repo, files):
-    # Per-file content signature, used to persist "viewed" checkmarks: a file
-    # stays viewed only while its diff is byte-identical to when it was marked.
-    # Binary diffs carry no hunk content, so fall back to size + mtime there.
-    for f in files:
-        h = hashlib.sha1()
-        for part in (f["status"], f["path"] or "", f["oldPath"] or ""):
-            h.update(part.encode("utf-8", "replace"))
-            h.update(b"\x00")
-        for hk in f["hunks"]:
-            h.update(hunk_sig(hk).encode("ascii"))
-        if f["binary"]:
-            try:
-                st = (Path(repo) / f["path"]).stat()
-                h.update(f"{st.st_size}:{st.st_mtime_ns}".encode("ascii"))
-            except OSError:
-                pass
-        f["sig"] = h.hexdigest()[:16]
+def file_bytes(repo, rel, rev=None):
+    """A file's contents in the working tree (rev=None) or at a commit; None
+    when it doesn't exist there or is over MAX_FILE_BYTES."""
+    if rev is None:
+        p = safe_repo_path(repo, rel)
+        if not p.is_file() or p.stat().st_size > MAX_FILE_BYTES:
+            return None
+        return p.read_bytes()
+    spec = f"{rev}:{rel}"
+    try:
+        if int(run_git_text(repo, ["cat-file", "-s", spec])) > MAX_FILE_BYTES:
+            return None
+        return run_git(repo, ["cat-file", "blob", spec])
+    except (GitError, ValueError):
+        return None
 
-    # Total line count of the working-tree file, needed for "expand down" past
-    # the last hunk. Deleted/binary files have nothing to expand into.
-    for f in files:
-        if f["status"] == "deleted" or f["binary"] or f.get("newTotal") is not None:
-            continue
-        p = Path(repo) / f["path"]
-        try:
-            if p.stat().st_size <= MAX_FILE_BYTES:
-                f["newTotal"] = count_lines(p.read_bytes())
-        except OSError:
-            pass
-    files.sort(key=lambda f: f["path"] or "")
-
-
-# ---------------------------------------------------------------------------
-# Review-to-review deltas
-#
-# Nothing is staged or committed between review loops, so git alone cannot
-# answer "what changed since my last review". Instead, finishing a review
-# snapshots the working-tree contents of every reviewed file
-# (revisions/<n>.files.json, zlib-compressed), and the delta view diffs those
-# snapshots against the working tree via `git diff --no-index` on temp files —
-# no repo involved, so it works with a read-only .git mount.
-# ---------------------------------------------------------------------------
 
 def split_lines(data):
     text = data.decode("utf-8", "replace")
@@ -386,178 +392,165 @@ def split_lines(data):
     return file_lines
 
 
-def describe_file_entry(p):
-    """Snapshot-entry shape for a path as it is right now: {"z": ...} for
-    diffable text, or an {"absent"/"binary"/"tooLarge"} marker. Two entries
-    compare equal iff there is no change worth showing."""
+def finalize_files(repo, files, rev=None):
+    """`rev` names the commit a commit view's new side comes from; None means
+    the working tree."""
+    # Per-file content signature, used to persist "viewed" checkmarks: a file
+    # stays viewed only while its diff is byte-identical to when it was marked.
+    # Binary diffs carry no hunk content, so fall back to size + mtime there
+    # (a commit never changes, so its sha is enough).
+    for f in files:
+        h = hashlib.sha1()
+        for part in (f["status"], f["path"] or "", f["oldPath"] or ""):
+            h.update(part.encode("utf-8", "replace"))
+            h.update(b"\x00")
+        for hk in f["hunks"]:
+            h.update(hunk_sig(hk).encode("ascii"))
+        if f["binary"] and rev:
+            h.update(rev.encode("ascii"))
+        elif f["binary"]:
+            try:
+                st = (Path(repo) / f["path"]).stat()
+                h.update(f"{st.st_size}:{st.st_mtime_ns}".encode("ascii"))
+            except OSError:
+                pass
+        f["sig"] = h.hexdigest()[:16]
+
+    # Total line count of the new-side file, needed for "expand down" past
+    # the last hunk. Deleted/binary files have nothing to expand into.
+    for f in files:
+        if f["status"] == "deleted" or f["binary"] or f.get("newTotal") is not None:
+            continue
+        try:
+            data = file_bytes(repo, f["path"], rev)
+        except (ValueError, OSError):
+            data = None
+        if data is not None:
+            f["newTotal"] = count_lines(data)
+    files.sort(key=lambda f: f["path"] or "")
+
+
+# ---------------------------------------------------------------------------
+# Review snapshots & the other views
+#
+# Finishing a review snapshots the whole working tree as a git tree object.
+# The objects go to a private store (<state>/objects) that borrows the
+# repo's own objects as an alternate: only uncommitted content is stored, and
+# .git is never written to. "Since review rN" is then a plain tree-to-tree
+# `git diff`, unaffected by commits, rebases or a moving base.
+# ---------------------------------------------------------------------------
+
+def snapshot_env(repo, state_root):
+    objects = Path(state_root) / "objects"
+    objects.mkdir(parents=True, exist_ok=True)
+    repo_objects = run_git_text(repo, ["rev-parse", "--git-path", "objects"]).strip()
+    return {
+        "GIT_OBJECT_DIRECTORY": str(objects),
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES": str((Path(repo) / repo_objects).resolve()),
+    }
+
+
+def snapshot_tree(repo, state_root, state_paths):
+    """Tree object for the working tree as it is now (tracked + untracked,
+    minus ignored files and gandalf's own state at `state_paths`)."""
+    env = snapshot_env(repo, state_root)
+    with tempfile.TemporaryDirectory(prefix="gandalf-index-") as td:
+        env["GIT_INDEX_FILE"] = str(Path(td) / "index")
+        # Starting from a copy of the repo's index lets `add` trust its stat
+        # cache and hash only what changed.
+        real = Path(repo) / run_git_text(repo, ["rev-parse", "--git-path", "index"]).strip()
+        if real.is_file():
+            shutil.copyfile(real, env["GIT_INDEX_FILE"])
+        else:
+            run_git(repo, ["read-tree", "HEAD"], env=env)
+        # Not an exclude pathspec: `add` rejects one naming an ignored path,
+        # and the state dir is usually gitignored.
+        run_git(repo, ["add", "-A"], env=env)
+        run_git(repo, ["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", *state_paths],
+                env=env)
+        return run_git_text(repo, ["write-tree"], env=env).strip()
+
+
+def diff_revs(repo, a, b, ignore_ws=False, env=None):
+    ws = ["-w"] if ignore_ws else []
+    raw = run_git_text(
+        repo, ["diff", "--no-color", "--find-renames", "-U3", *ws, a, b, "--"], env=env
+    )
+    return parse_unified_diff(raw)
+
+
+def collect_review_since(repo, state_root, state_paths, tree, ignore_ws=False):
+    """What changed between review snapshot `tree` and the working tree."""
+    now = snapshot_tree(repo, state_root, state_paths)
+    files = diff_revs(repo, tree, now, ignore_ws, env=snapshot_env(repo, state_root))
+    finalize_files(repo, files)
+    return files
+
+
+def commit_parent(repo, sha):
+    """First parent, or the empty tree for a root commit."""
+    parent = rev_parse(repo, f"{sha}^")
+    if parent:
+        return parent
+    return run_git_text(repo, ["hash-object", "-t", "tree", "--stdin"]).strip()
+
+
+def collect_commit(repo, sha, ignore_ws=False):
+    files = diff_revs(repo, commit_parent(repo, sha), sha, ignore_ws)
+    finalize_files(repo, files, rev=sha)
+    return files
+
+
+def commit_info(repo, sha):
+    """{sha, short, subject, time} for a commit object, or None."""
     try:
-        if not p.is_file():
-            return {"absent": True}
-        st = p.stat()
-        if st.st_size > MAX_FILE_BYTES:
-            return {"tooLarge": True, "stat": f"{st.st_size}:{st.st_mtime_ns}"}
-        data = p.read_bytes()
-    except OSError:
-        return {"absent": True}
-    if b"\x00" in data:
-        return {"binary": True, "sha": hashlib.sha1(data).hexdigest()}
-    return {"z": base64.b64encode(zlib.compress(data)).decode("ascii")}
+        out = run_git_text(repo, ["log", "-1", "--format=%H%x00%s%x00%ct", sha, "--"])
+    except GitError:
+        return None
+    full, subject, ts = out.rstrip("\n").split("\x00", 2)
+    return {"sha": full, "short": full[:7], "subject": subject, "time": int(ts or 0)}
 
 
-def entry_bytes(entry):
-    """The text content of a snapshot entry, or None if it has none."""
-    if entry and "z" in entry:
-        return zlib.decompress(base64.b64decode(entry["z"]))
+def branch_point(repo):
+    """(sha, name): HEAD's merge-base with the default branch (HEAD itself
+    when on it) and that branch's short name; None when there is no default
+    branch to compare with."""
+    for ref in ("refs/remotes/origin/HEAD", "refs/heads/main", "refs/heads/master"):
+        tip = rev_parse(repo, ref)
+        if not tip:
+            continue
+        try:
+            sha = run_git_text(repo, ["merge-base", tip, "HEAD"]).strip()
+            name = run_git_text(repo, ["rev-parse", "--abbrev-ref", ref]).strip()
+        except GitError:
+            return None
+        return sha, name
     return None
 
 
-def snapshot_worktree(repo, files):
-    entries = {}
-    for f in files:
-        rel = f["path"]
-        if not rel:
-            continue
-        try:
-            p = safe_repo_path(repo, rel)
-        except ValueError:
-            continue
-        entries[rel] = describe_file_entry(p)
-    return entries
-
-
-def snapshot_path(state_root, branch, n):
-    return branch_dir(state_root, branch) / "revisions" / f"{n}.files.json"
-
-
-def load_snapshot_files(state_root, branch, n):
-    p = snapshot_path(state_root, branch, n)
-    if not p.is_file():
-        return None
+def list_commits(repo, point, reviewed_head=None, limit=100):
+    """The commits on HEAD's branch: first-parent history back to, but not
+    including, branch point `point`, newest first. Without a branch point,
+    just the most recent commits. `new` marks commits made since
+    `reviewed_head`."""
     try:
-        return json.loads(p.read_text(encoding="utf-8")).get("files", {})
-    except (OSError, json.JSONDecodeError):
-        return None
-
-
-def base_ref_entry(repo, base, rel):
-    """Snapshot-shaped entry for the file as of the base ref. This is the
-    delta baseline for files the review snapshot doesn't cover: a file that
-    wasn't in the review was identical to the base at review time (else it
-    would have been in the diff), and a file the base doesn't know is truly
-    new since the review."""
-    try:
-        data = run_git(repo, ["show", f"{base}:{rel}"])
+        out = run_git_text(repo, [
+            "log", "--first-parent", f"-n{limit}", "--format=%H%x00%s",
+            f"{point}..HEAD" if point else "HEAD", "--",
+        ])
     except GitError:
-        return {"absent": True}
-    if len(data) > MAX_FILE_BYTES:
-        return {"tooLarge": True, "stat": f"{len(data)}:base"}
-    if b"\x00" in data:
-        return {"binary": True, "sha": hashlib.sha1(data).hexdigest()}
-    return {"z": base64.b64encode(zlib.compress(data)).decode("ascii")}
-
-
-def diff_no_index(old_bytes, new_bytes, ignore_ws=False):
-    """Parsed unified diff of two byte strings. `git diff --no-index` needs no
-    repository (and exits 1 when the files differ, which is not an error)."""
-    ws = ["-w"] if ignore_ws else []
-    with tempfile.TemporaryDirectory(prefix="gandalf-delta-") as td:
-        a, b = Path(td) / "a", Path(td) / "b"
-        a.write_bytes(old_bytes)
-        b.write_bytes(new_bytes)
-        proc = subprocess.run(
-            ["git", "diff", "--no-color", "-U3", *ws, "--no-index", "--", str(a), str(b)],
-            capture_output=True,
-        )
-    if proc.returncode not in (0, 1):
-        raise GitError(
-            proc.stderr.decode("utf-8", "replace").strip() or "git diff --no-index failed"
-        )
-    parsed = parse_unified_diff(proc.stdout.decode("utf-8", "replace"))
-    return parsed[0] if parsed else None
-
-
-def whole_file_hunk(file_lines, kind):
-    add = kind == "add"
-    return {
-        "oldStart": 0 if add else 1, "oldCount": 0 if add else len(file_lines),
-        "newStart": 1 if add else 0, "newCount": len(file_lines) if add else 0,
-        "section": "",
-        "lines": [
-            {"t": kind, "old": None if add else i + 1,
-             "new": i + 1 if add else None, "text": t}
-            for i, t in enumerate(file_lines)
-        ],
-    }
-
-
-def delta_file(repo, rel, snap_entry, ignore_ws=False):
-    """One file's diff between a review snapshot and the working tree now;
-    None when it hasn't changed since that review."""
-    try:
-        p = safe_repo_path(repo, rel)
-    except ValueError:
-        return None
-    old = snap_entry or {"absent": True}
-    cur = describe_file_entry(p)
-    if old == cur:
-        return None
-    old_b, cur_b = entry_bytes(old), entry_bytes(cur)
-
-    f = {
-        "path": rel, "oldPath": None, "status": "modified", "binary": False,
-        "additions": 0, "deletions": 0, "hunks": [], "newTotal": None, "delta": True,
-    }
-    if old_b is not None and cur_b is not None:
-        if old_b == cur_b:
-            return None  # markers differ but bytes don't (e.g. clock-only stat drift)
-        d = diff_no_index(old_b, cur_b, ignore_ws=ignore_ws)
-        if d is None:
-            return None
-        f["hunks"], f["additions"], f["deletions"] = d["hunks"], d["additions"], d["deletions"]
-        return f
-    if old.get("absent") and cur_b is not None:
-        f["status"] = "added"
-        lines = split_lines(cur_b)
-        if lines:
-            f["hunks"] = [whole_file_hunk(lines, "add")]
-            f["additions"] = len(lines)
-        f["newTotal"] = len(lines)
-        return f
-    if cur.get("absent") and old_b is not None:
-        f["status"] = "deleted"
-        lines = split_lines(old_b)
-        if lines:
-            f["hunks"] = [whole_file_hunk(lines, "del")]
-            f["deletions"] = len(lines)
-        return f
-    # Binary or too-large on at least one side: listed but not rendered.
-    f["binary"] = True
-    if old.get("absent"):
-        f["status"] = "added"
-    elif cur.get("absent"):
-        f["status"] = "deleted"
-    return f
-
-
-def collect_review_since(repo, base, excludes, skip_prefixes, snapshot_files,
-                         raws=None, ignore_ws=False):
-    """The delta view: candidates are every file changed vs the base now plus
-    every file the snapshot covered; each is diffed snapshot -> working tree.
-    Files untouched since the review drop out entirely."""
-    raws = raws or gather_raws(repo, base, excludes, skip_prefixes, ignore_ws=ignore_ws)
-    current = set(raws["untracked"])
-    for f in parse_unified_diff(raws["raw"]):
-        for name in (f["path"], f["oldPath"]):
-            if name:
-                current.add(name)
-    files = []
-    for rel in sorted(current | set(snapshot_files.keys())):
-        entry = snapshot_files.get(rel) or base_ref_entry(repo, base, rel)
-        f = delta_file(repo, rel, entry, ignore_ws=ignore_ws)
-        if f:
-            files.append(f)
-    finalize_files(repo, files)
-    return files, raws
+        return []  # unborn branch
+    new = set()
+    if reviewed_head:
+        try:
+            new = set(run_git_text(repo, ["rev-list", "HEAD", f"^{reviewed_head}", "--"]).split())
+        except GitError:
+            pass  # reviewed head no longer exists
+    commits = []
+    for line in out.splitlines():
+        sha, subject = line.split("\x00", 1)
+        commits.append({"sha": sha, "short": sha[:7], "subject": subject, "new": sha in new})
+    return commits
 
 
 # ---------------------------------------------------------------------------
@@ -570,7 +563,9 @@ def collect_review_since(repo, base, excludes, skip_prefixes, snapshot_files,
 # If the quoted lines no longer exist verbatim, the draft is marked detached
 # and displays its saved excerpt instead of pointing at the wrong code.
 # "old"-side drafts (on deleted lines) never move — their old side is fixed —
-# they only detach if the deletion itself is gone from the diff.
+# they only detach if the deletion itself is gone from the diff. Drafts made
+# in a commit view are pinned to that commit, which never changes, so they
+# are never re-anchored at all.
 # ---------------------------------------------------------------------------
 
 def safe_repo_path(repo, rel):
@@ -582,14 +577,8 @@ def safe_repo_path(repo, rel):
 
 
 def read_worktree_lines(repo, rel):
-    p = safe_repo_path(repo, rel)
-    if not p.is_file() or p.stat().st_size > MAX_FILE_BYTES:
-        return None
-    text = p.read_bytes().decode("utf-8", "replace")
-    file_lines = text.split("\n")
-    if text.endswith("\n"):
-        file_lines = file_lines[:-1]
-    return file_lines
+    data = file_bytes(repo, rel)
+    return None if data is None else split_lines(data)
 
 
 def find_occurrences(haystack, needle):
@@ -597,21 +586,37 @@ def find_occurrences(haystack, needle):
     return [i for i in range(len(haystack) - n + 1) if haystack[i:i + n] == needle]
 
 
-def reanchor_drafts(repo, files, drafts, baseline=None):
-    """`baseline` names the view being collected (a review number for the
-    delta view, None for the full diff). Old-side drafts belong to the view
+def old_side_key(c):
+    """Which old side a draft's deleted-line numbers point into."""
+    if c.get("commit"):
+        return ("commit", c["commit"])
+    if c.get("baseline"):
+        return ("since", c["baseline"])
+    return ("base", c.get("base"))
+
+
+def view_old_key(view):
+    kind = view["kind"]
+    return (kind, view["since"] if kind == "since" else view[kind])
+
+
+def reanchor_drafts(repo, files, drafts, view):
+    """`view` is the view being collected. Old-side drafts belong to the view
     they were made in — their line numbers mean nothing against a different
     old side — so they are only re-checked when the views match. New-side
-    drafts anchor to the working tree, which is the same in every view."""
+    drafts anchor to the working tree, which is the new side of every view
+    but a commit view."""
     by_path = {f["path"]: f for f in files}
     file_cache = {}
     changed = False
     for c in drafts:
         if c.get("fileLevel") or c.get("reviewLevel") or c.get("parentId"):
             continue  # no lines of their own; replies follow their thread root
+        if c.get("commit"):
+            continue  # pinned to an immutable commit
         before = (c.get("detached"), c.get("startLine"), c.get("endLine"))
         if c.get("side") == "old":
-            if (c.get("baseline") or None) != baseline:
+            if old_side_key(c) != view_old_key(view):
                 continue
             f = by_path.get(c.get("file"))
             if f is None or f.get("binary"):
@@ -626,6 +631,8 @@ def reanchor_drafts(repo, files, drafts, baseline=None):
                     n in deleted for n in range(c["startLine"], c["endLine"] + 1)
                 )
         else:
+            if view["kind"] == "commit":
+                continue
             texts = [e[1:] for e in c.get("excerpt", []) if e[:1] in ("+", " ")]
             if c["file"] not in file_cache:
                 try:
@@ -741,6 +748,10 @@ def wipe_history(state_root, branch, all_branches):
             write_json_atomic(sp, state)
         reviews += n
         branches += 1
+    # Snapshot trees are shared across branches, so only a full wipe can
+    # drop the store; a branch wipe just leaves its trees unreferenced.
+    if all_branches:
+        shutil.rmtree(Path(state_root) / "objects", ignore_errors=True)
     # The handoff file describes the latest submitted review; once that review
     # is gone, an agent must not still be able to act on it.
     (Path(state_root) / "pending-review.md").unlink(missing_ok=True)
@@ -760,31 +771,35 @@ def render_review_markdown(snapshot):
     base_ref = snapshot.get("base") or "HEAD"
     base_desc = "the last commit (HEAD)" if base_ref == "HEAD" \
         else f"the base ref `{base_ref}`"
-    if not snapshot.get("comments"):
+    comments = snapshot.get("comments") or []
+    commits = snapshot.get("commits") or {}
+    intro = (
+        f"Review r{snapshot['revision']} of the changes in this repository "
+        f"(branch `{snapshot['branch']}`, HEAD {snapshot['head']}, "
+        f"submitted {snapshot['submittedAt']})"
+    )
+    if not comments:
         # A commentless review is an approval: the reviewer checkpointed the
         # changes as good. Say so plainly — an agent reading the handoff
         # file should know there is nothing to act on.
         return (
             "# Code review — approved, nothing to address\n"
             "\n"
-            f"Review r{snapshot['revision']} of the uncommitted working-tree "
-            f"changes in this repository (branch `{snapshot['branch']}`, "
-            f"HEAD {snapshot['head']}, submitted {snapshot['submittedAt']}) "
-            "was finished with no comments: the reviewer approved these "
-            "changes as-is. No action is needed.\n"
+            f"{intro} was finished with no comments: the reviewer approved "
+            "these changes as-is. No action is needed.\n"
         )
+    on_commits = any(c.get("commit") for c in comments)
     lines = [
         "# Code review — please address each comment",
         "",
-        f"Review r{snapshot['revision']} of the uncommitted working-tree changes "
-        f"in this repository (branch `{snapshot['branch']}`, "
-        f"HEAD {snapshot['head']}, submitted {snapshot['submittedAt']}).",
+        f"{intro}.",
         "",
         "How to read the comments:",
         "",
-        "- \"Line N\" refers to the file as it exists in the working tree right now.",
+        "- \"Line N\" refers to the file as it exists in the working tree right now"
+        + (", except under a \"Commit\" heading." if on_commits else "."),
         f"- Comments marked \"on deleted code\" are about removed lines; those line "
-        f"numbers refer to the file as of {base_desc}.",
+        f"numbers refer to the file as of {base_desc}, unless noted otherwise.",
         "- Each comment quotes the lines it targets (`+`/`-`/space = added/removed/"
         "unchanged). If line numbers have drifted since submission, locate the "
         "quoted code instead.",
@@ -792,9 +807,18 @@ def render_review_markdown(snapshot):
         "their intent to the closest current code.",
         "- A \"File comment\" applies to its whole file; an \"Overall\" section "
         "applies to the entire change.",
-        "",
     ]
-    overall = [c for c in snapshot.get("comments", []) if c.get("reviewLevel")]
+    if on_commits:
+        lines += [
+            "- Comments under a \"Commit\" heading were left on that single commit. "
+            "Their line numbers refer to the file as of that commit (or its parent, "
+            "for deleted lines). The code may have changed since: address them in "
+            "the current code, and don't rewrite history unless asked.",
+            "- A commit marked \"no longer in history\" was rewritten (e.g. by a "
+            "rebase); locate the quoted code instead.",
+        ]
+    lines.append("")
+    overall = [c for c in comments if c.get("reviewLevel")]
     if overall:
         lines.append("## Overall")
         lines.append("")
@@ -803,7 +827,7 @@ def render_review_markdown(snapshot):
             lines.append("")
     # Replies render as additional paragraphs of their thread root's entry.
     replies = {}
-    for c in snapshot.get("comments", []):
+    for c in comments:
         if c.get("parentId"):
             replies.setdefault(c["parentId"], []).append(c)
     for arr in replies.values():
@@ -814,44 +838,64 @@ def render_review_markdown(snapshot):
         texts += [(r.get("text") or "").rstrip() for r in replies.get(c.get("id"), [])]
         return "\n\n".join(t for t in texts if t)
 
-    by_file = {}
-    for c in snapshot.get("comments", []):
-        if c.get("reviewLevel") or c.get("parentId"):
-            continue
-        by_file.setdefault(c.get("file") or "(unknown file)", []).append(c)
-    for path in sorted(by_file):
-        lines.append(f"## {path}")
-        lines.append("")
-        # File-level comments first (startLine None sorts as 0), then by line.
-        for c in sorted(by_file[path], key=lambda c: (c.get("startLine") or 0)):
-            if c.get("fileLevel"):
-                lines.append("**File comment**")
+    def file_sections(by_file, heading):
+        for path in sorted(by_file):
+            lines.append(f"{heading} {path}")
+            lines.append("")
+            # File-level comments first (startLine None sorts as 0), then by line.
+            for c in sorted(by_file[path], key=lambda c: (c.get("startLine") or 0)):
+                if c.get("fileLevel"):
+                    lines.append("**File comment**")
+                    lines.append("")
+                    lines.append(entry_text(c))
+                    lines.append("")
+                    continue
+                start, end = c.get("startLine"), c.get("endLine")
+                rng = f"Line {start}" if start == end else f"Lines {start}–{end}"
+                notes = []
+                if c.get("side") == "old":
+                    # A baseline marks a comment made in the "changes since
+                    # review rN" view: its deleted lines came from that
+                    # review's snapshot, not from the base ref.
+                    if c.get("baseline"):
+                        notes.append(f"on code removed since review r{c['baseline']}")
+                    elif c.get("base") and c["base"] != snapshot.get("baseSha") \
+                            and not c.get("commit"):
+                        notes.append(f"on deleted code, as of commit {c['base'][:7]}")
+                    else:
+                        notes.append("on deleted code")
+                if c.get("detached"):
+                    notes.append("detached")
+                suffix = f" ({', '.join(notes)})" if notes else ""
+                lines.append(f"**{rng}{suffix}**")
                 lines.append("")
+                for ex in c.get("excerpt") or []:
+                    lines.append(f"> {ex}")
+                if c.get("excerpt"):
+                    lines.append("")
                 lines.append(entry_text(c))
                 lines.append("")
-                continue
-            start, end = c.get("startLine"), c.get("endLine")
-            rng = f"Line {start}" if start == end else f"Lines {start}–{end}"
-            notes = []
-            if c.get("side") == "old":
-                # A baseline marks a comment made in the "changes since review
-                # rN" view: its deleted lines came from that review's snapshot
-                # of the file, not from the base ref.
-                if c.get("baseline"):
-                    notes.append(f"on code removed since review r{c['baseline']}")
-                else:
-                    notes.append("on deleted code")
-            if c.get("detached"):
-                notes.append("detached")
-            suffix = f" ({', '.join(notes)})" if notes else ""
-            lines.append(f"**{rng}{suffix}**")
-            lines.append("")
-            for ex in c.get("excerpt") or []:
-                lines.append(f"> {ex}")
-            if c.get("excerpt"):
-                lines.append("")
-            lines.append(entry_text(c))
-            lines.append("")
+
+    worktree, by_commit = {}, {}
+    for c in comments:
+        if c.get("reviewLevel") or c.get("parentId"):
+            continue
+        group = by_commit.setdefault(c["commit"], {}) if c.get("commit") else worktree
+        group.setdefault(c.get("file") or "(unknown file)", []).append(c)
+    file_sections(worktree, "##")
+    # Commits in history order; rewritten ones last.
+    order = sorted(by_commit, key=lambda sha: (
+        bool(commits.get(sha, {}).get("gone")), commits.get(sha, {}).get("time", 0)))
+    for sha in order:
+        meta = commits.get(sha, {})
+        title = f"## Commit `{meta.get('short') or sha[:7]}`"
+        if meta.get("subject"):
+            title += f" — {meta['subject']}"
+        if meta.get("gone"):
+            title += " (no longer in history)"
+        lines.append(title)
+        lines.append("")
+        file_sections(by_commit[sha], "###")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -860,6 +904,9 @@ def render_review_markdown(snapshot):
 # ---------------------------------------------------------------------------
 
 def make_handler(repo, base, state_root, excludes, skip_prefixes):
+    # gandalf's own state, as repo-relative paths kept out of snapshots.
+    state_paths = [STATE_DIR_NAME, *skip_prefixes]
+
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -983,65 +1030,134 @@ def make_handler(repo, base, state_root, excludes, skip_prefixes):
             self.end_headers()
             self.wfile.write(body)
 
+        def default_base(self):
+            """--base as a commit: its merge-base with HEAD, so a branch name
+            reviews what this branch changed (GitHub's `base...HEAD`)."""
+            try:
+                return run_git_text(repo, ["merge-base", base, "HEAD"]).strip()
+            except GitError:
+                sha = rev_parse(repo, base)
+                if not sha:
+                    raise GitError(f"unknown base ref {base!r}")
+                return sha
+
+        def collect_view(self, params, revisions, default, ignore_ws, raws=None):
+            """-> (files, view). `params` picks the view: since=N (review rN's
+            snapshot -> working tree), commit=SHA (one commit vs its parent),
+            or all=1 (the branch point -> working tree). Without any, --base
+            -> working tree."""
+            since, commit, all_ = (params.get(k) for k in VIEW_PARAMS)
+            if since:
+                rev = next((r for r in revisions
+                            if str(r.get("revision")) == str(since) and r.get("tree")), None)
+                if rev is None:
+                    raise ViewError(f"no snapshot for review r{since}")
+                try:
+                    files = collect_review_since(
+                        repo, state_root, state_paths, rev["tree"], ignore_ws
+                    )
+                except GitError as e:
+                    raise ViewError(f"snapshot for review r{since} is unreadable ({e})")
+                return files, {"kind": "since", "since": rev["revision"]}
+            if commit:
+                info = commit_info(repo, commit) if is_sha(commit) else None
+                if not info:
+                    raise ViewError(f"no such commit {commit}")
+                return collect_commit(repo, info["sha"], ignore_ws), {
+                    "kind": "commit", "commit": info["sha"],
+                    "short": info["short"], "subject": info["subject"],
+                }
+            view_base, since_branch = default, None
+            if all_:
+                point = branch_point(repo)
+                if not point:
+                    raise ViewError("no default branch to diff against")
+                # On the default branch, that is just the default view.
+                if point[0] != default:
+                    view_base, since_branch = point
+            files, _ = collect_review(
+                repo, view_base, excludes, skip_prefixes,
+                raws=raws if view_base == default else None, ignore_ws=ignore_ws,
+            )
+            # Staging works on the index, so its badges and hunk patches only
+            # make sense when the diff is relative to HEAD.
+            if view_base != rev_parse(repo, "HEAD"):
+                for f in files:
+                    f["stagedState"] = None
+                    for h in f["hunks"]:
+                        h["staged"] = False
+            return files, {"kind": "base", "base": view_base, "all": since_branch}
+
         def api_review(self, q):
             branch = current_branch(repo)
-            since_q = (q.get("since") or [""])[0]
-            since = int(since_q) if since_q.isdigit() else None
             ignore_ws = (q.get("ws") or [""])[0] == "1"
-            raws = gather_raws(repo, base, excludes, skip_prefixes, ignore_ws=ignore_ws)
-            if since is not None:
-                snap_files = load_snapshot_files(state_root, branch, since)
-                if snap_files is None:
-                    return self.send_error_json(f"no snapshot for review r{since}", 404)
-                files, raws = collect_review_since(
-                    repo, base, excludes, skip_prefixes, snap_files,
-                    raws=raws, ignore_ws=ignore_ws,
-                )
-            else:
-                files, raws = collect_review(
-                    repo, base, excludes, skip_prefixes, raws=raws, ignore_ws=ignore_ws
-                )
+            params = {k: (q.get(k) or [""])[0] for k in VIEW_PARAMS}
+            with STATE_LOCK:
+                revisions = read_state(state_root, branch).get("revisions", [])
+            default = self.default_base()
+            raws = gather_raws(repo, default, excludes, skip_prefixes, ignore_ws=ignore_ws)
+            try:
+                files, view = self.collect_view(params, revisions, default, ignore_ws, raws)
+            except ViewError as e:
+                return self.send_error_json(str(e), 404)
             with STATE_LOCK:
                 state = read_state(state_root, branch)
                 drafts = state.get("drafts", [])
-                if reanchor_drafts(repo, files, drafts, baseline=since):
+                if reanchor_drafts(repo, files, drafts, view):
                     write_state(state_root, branch, state)
+            # Viewed marks are per path in the working-tree views, and per
+            # commit + path in a commit view.
             viewed_map = state.get("viewed", {})
             for f in files:
-                f["viewed"] = viewed_map.get(f["path"]) == f["sig"]
+                key = f"{view['commit']}:{f['path']}" if view["kind"] == "commit" else f["path"]
+                f["viewedKey"] = key
+                f["viewed"] = viewed_map.get(key) == f["sig"]
+            reviewed_head = next(
+                (r["headSha"] for r in reversed(revisions) if r.get("headSha")), None
+            )
+            pinned = {c["commit"] for c in drafts if is_sha(c.get("commit"))}
+            point = branch_point(repo)
+            # "All changes" only means something off the default branch, and
+            # when it isn't what the default view already shows.
+            all_changes = point[1] if point and point[0] not in (
+                rev_parse(repo, "HEAD"), default) else None
             self.send_json({
                 "repo": Path(repo).name,
                 "branch": branch,
                 "base": base,
-                "since": since,
+                "view": view,
                 "ignoreWhitespace": ignore_ws,
                 "head": raws["head"],
-                "fingerprint": raws["fingerprint"],
+                # A commit never changes, so there is nothing to go stale.
+                "fingerprint": None if view["kind"] == "commit" else raws["fingerprint"],
                 "files": files,
                 "drafts": drafts,
                 "revisions": state.get("revisions", []),
+                "commits": list_commits(repo, point and point[0], reviewed_head),
+                "allChanges": all_changes,
+                "lostCommits": sorted(s for s in pinned if not is_ancestor(repo, s)),
             })
 
         def api_status(self, q):
             # Same ?ws= the review was fetched with, so fingerprints compare.
             ignore_ws = (q.get("ws") or [""])[0] == "1"
-            raws = gather_raws(repo, base, excludes, skip_prefixes, ignore_ws=ignore_ws)
+            raws = gather_raws(
+                repo, self.default_base(), excludes, skip_prefixes, ignore_ws=ignore_ws
+            )
             self.send_json({"fingerprint": raws["fingerprint"], "head": raws["head"]})
 
         def api_file(self, q):
+            """A file's lines in the working tree, or at ?rev= (a commit view)."""
             rel = (q.get("path") or [""])[0]
             if not rel:
                 return self.send_error_json("missing ?path=", 400)
-            p = self.repo_file(rel)
-            if not p.is_file():
-                return self.send_error_json("no such file in working tree", 404)
-            if p.stat().st_size > MAX_FILE_BYTES:
-                return self.send_error_json("file too large for context expansion", 413)
-            text = p.read_bytes().decode("utf-8", "replace")
-            file_lines = text.split("\n")
-            if text.endswith("\n"):
-                file_lines = file_lines[:-1]
-            self.send_json({"path": rel, "lines": file_lines})
+            rev = (q.get("rev") or [""])[0] or None
+            if rev is not None and not is_sha(rev):
+                return self.send_error_json("bad ?rev=", 400)
+            data = file_bytes(repo, rel, rev)
+            if data is None:
+                return self.send_error_json("file missing or too large for context expansion", 404)
+            self.send_json({"path": rel, "lines": split_lines(data)})
 
         def api_revision(self, q):
             n = (q.get("n") or [""])[0]
@@ -1112,20 +1228,26 @@ def make_handler(repo, base, state_root, excludes, skip_prefixes):
             if not isinstance(comments, list):
                 return self.send_error_json("expected {comments: [...]}", 400)
             branch = current_branch(repo)
-            # Freeze the diff the way the reviewer saw it (ignore-whitespace
-            # is cosmetic; comments carry their own excerpts either way).
             ignore_ws = bool(payload.get("ignoreWs"))
-            files, raws = collect_review(
-                repo, base, excludes, skip_prefixes, ignore_ws=ignore_ws
-            )
-            # The content snapshot is a checkpoint in time, not a view: cover
-            # the plain changed-file set even when the reviewer hid
-            # whitespace, so later deltas don't resurface pre-review
-            # whitespace edits as "changed since".
-            snap_files = files
-            if ignore_ws:
-                snap_files, _ = collect_review(repo, base, excludes, skip_prefixes)
-            head = raws["head"]
+            view_params = {k: str(v) for k, v in (payload.get("view") or {}).items()
+                           if k in VIEW_PARAMS and v}
+            default = self.default_base()
+            with STATE_LOCK:
+                revisions = read_state(state_root, branch).get("revisions", [])
+            # Freeze the diff the way the reviewer saw it, for the audit trail
+            # (comments carry their own excerpts either way).
+            try:
+                files, view = self.collect_view(view_params, revisions, default, ignore_ws)
+            except ViewError:
+                files, view = self.collect_view({}, revisions, default, ignore_ws)
+            # The checkpoint the next "since" view diffs against.
+            tree = snapshot_tree(repo, state_root, state_paths)
+            head_sha = rev_parse(repo, "HEAD")
+            head = run_git_text(repo, ["rev-parse", "--short", "HEAD"]).strip()
+            commits = {}
+            for sha in {c.get("commit") for c in comments if is_sha(c.get("commit"))}:
+                info = commit_info(repo, sha) or {"short": sha[:7], "subject": "", "time": 0}
+                commits[sha] = {**info, "gone": not is_ancestor(repo, sha)}
             submitted_at = now_iso()
             with STATE_LOCK:
                 state = read_state(state_root, branch)
@@ -1134,26 +1256,25 @@ def make_handler(repo, base, state_root, excludes, skip_prefixes):
                     "revision": revision,
                     "branch": branch,
                     "base": base,
+                    "baseSha": default,
                     "head": head,
+                    "headSha": head_sha,
                     "submittedAt": submitted_at,
+                    "view": view,
+                    "commits": commits,
                     "comments": comments,
                     "files": files,
                 }
                 write_json_atomic(
                     branch_dir(state_root, branch) / "revisions" / f"{revision}.json", snapshot
                 )
-                # Working-tree contents of the reviewed files, so a later
-                # session can show only what changed since this review.
-                write_json_atomic(
-                    snapshot_path(state_root, branch, revision),
-                    {"revision": revision, "files": snapshot_worktree(repo, snap_files)},
-                )
                 state["revisions"].append({
                     "revision": revision,
                     "submittedAt": submitted_at,
                     "head": head,
+                    "headSha": head_sha,
+                    "tree": tree,
                     "commentCount": len(comments),
-                    "hasSnapshot": True,
                 })
                 state["drafts"] = []
                 write_state(state_root, branch, state)

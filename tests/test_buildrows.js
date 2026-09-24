@@ -119,27 +119,33 @@ check('di sequential', dis.every((d, i) => d === i));
 // 9. old-side comments only anchor in the view they were made in
 const comments = [
   { id: 'a', side: 'new', startLine: 5, endLine: 5, text: 'n' },
-  { id: 'b', side: 'old', startLine: 5, endLine: 5, text: 'full-view old' },
+  { id: 'b', side: 'old', startLine: 5, endLine: 5, base: 'aaa', text: 'full-view old' },
   { id: 'c', side: 'old', startLine: 5, endLine: 5, baseline: 3, text: 'delta-view old' },
+  { id: 'd', side: 'old', startLine: 5, endLine: 5, commit: 'ccc', text: 'commit old' },
 ];
-let anchors = ctx.commentsByAnchor(comments, null);
-check('full view: new + unbaselined old anchor',
-  anchors.get('new:5').length === 1 && anchors.get('old:5').length === 1);
-check('full view: delta-baselined old excluded',
-  !anchors.get('old:5').some((c) => c.id === 'c'));
-anchors = ctx.commentsByAnchor(comments, 3);
+const fullKey = ctx.viewOldKey({ kind: 'base', base: 'aaa' });
+let anchors = ctx.commentsByAnchor(comments, fullKey);
+check('full view: new + same-base old anchor',
+  anchors.get('new:5').length === 1 && anchors.get('old:5').length === 1
+  && anchors.get('old:5')[0].id === 'b');
+anchors = ctx.commentsByAnchor(comments, ctx.viewOldKey({ kind: 'base', base: 'bbb' }));
+check('other base: old excluded', !anchors.has('old:5'));
+anchors = ctx.commentsByAnchor(comments, ctx.viewOldKey({ kind: 'since', since: 3 }));
 check('delta view: matching-baseline old anchors',
   anchors.get('old:5').length === 1 && anchors.get('old:5')[0].id === 'c');
 check('delta view: new-side always anchors', anchors.get('new:5').length === 1);
-const cov = ctx.coverageSet(comments, null);
+anchors = ctx.commentsByAnchor(comments, ctx.viewOldKey({ kind: 'commit', commit: 'ccc' }));
+check('commit view: its own old-side comment anchors',
+  anchors.get('old:5').length === 1 && anchors.get('old:5')[0].id === 'd');
+const cov = ctx.coverageSet(comments, fullKey);
 check('coverage respects view', cov.has('new:5') && cov.has('old:5'));
 
 // 10. file-level comments never anchor to lines or cover them
 const withFile = comments.concat([{ id: 'f', fileLevel: true, text: 'whole file' }]);
 check('file-level comment not anchored',
-  ![...ctx.commentsByAnchor(withFile, null).values()].flat().some((c) => c.id === 'f'));
+  ![...ctx.commentsByAnchor(withFile, fullKey).values()].flat().some((c) => c.id === 'f'));
 check('file-level comment not in coverage',
-  ctx.coverageSet(withFile, null).size === cov.size);
+  ctx.coverageSet(withFile, fullKey).size === cov.size);
 check('labels', ctx.rangeLabel({ fileLevel: true }) === 'file comment'
   && ctx.rangeLabel({ reviewLevel: true }) === 'review comment'
   && ctx.rangeLabel({ parentId: 'x' }) === 'reply');
@@ -147,8 +153,21 @@ check('labels', ctx.rangeLabel({ fileLevel: true }) === 'file comment'
 // 11. replies never anchor or cover; they render inside their parent's thread
 const withReply = comments.concat([{ id: 'r', parentId: 'a', text: 'follow-up' }]);
 check('reply not anchored',
-  ![...ctx.commentsByAnchor(withReply, null).values()].flat().some((c) => c.id === 'r'));
-check('reply not in coverage', ctx.coverageSet(withReply, null).size === cov.size);
+  ![...ctx.commentsByAnchor(withReply, fullKey).values()].flat().some((c) => c.id === 'r'));
+check('reply not in coverage', ctx.coverageSet(withReply, fullKey).size === cov.size);
+
+// 12. surfaces: commit-pinned comments (and their replies) live apart from
+// the working tree's
+const pool = [
+  { id: 'w', side: 'new' }, { id: 'k', side: 'new', commit: 'ccc' },
+  { id: 'kr', parentId: 'k' }, { id: 'wr', parentId: 'w' },
+];
+check('surfaces', ctx.surfaceOf(pool[0], pool) === 'worktree'
+  && ctx.surfaceOf(pool[1], pool) === 'commit:ccc'
+  && ctx.surfaceOf(pool[2], pool) === 'commit:ccc'
+  && ctx.surfaceOf(pool[3], pool) === 'worktree');
+check('view surfaces', ctx.surfaceOfView({ kind: 'commit', commit: 'ccc' }) === 'commit:ccc'
+  && ctx.surfaceOfView({ kind: 'since', since: 2 }) === 'worktree');
 const thread = ctx.threadHtml(withReply[0], withReply, { form: null }, false);
 check('thread contains root and reply text',
   thread.includes('follow-up') && thread.includes('Reply'));

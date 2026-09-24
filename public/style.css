@@ -171,9 +171,12 @@ button.plain-link:hover { color: var(--accent); }
   padding: 0 5px;
 }
 
-/* Baseline picker: what the working tree is diffed against. Tinted when a
-   review snapshot is selected, so the narrowed lens is always visible. */
-#baseline-select {
+/* View picker: what is being reviewed. Tinted whenever it isn't the default
+   view, so a narrowed lens is always visible. Commit subjects make for long
+   labels, so the closed control is capped. */
+#view-select {
+  max-width: 320px;
+  text-overflow: ellipsis;
   font: inherit;
   color: var(--text);
   background: transparent;
@@ -182,8 +185,8 @@ button.plain-link:hover { color: var(--accent); }
   padding: 4px 8px;
   cursor: pointer;
 }
-#baseline-select:hover { border-color: var(--muted); }
-#baseline-select.delta-on {
+#view-select:hover { border-color: var(--muted); }
+#view-select.delta-on {
   color: var(--accent);
   border-color: var(--accent);
   font-weight: 600;
@@ -494,7 +497,7 @@ button.tree-icon:hover { color: var(--accent); }
 
 /* ---- audit trail ---- */
 #history { margin-bottom: 20px; }
-#history h2 {
+#history h2, #lost-comments h2 {
   font-size: 14px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -862,6 +865,45 @@ tr.crow > td { padding: 6px 8px 6px 46px; background: var(--panel); }
   color: var(--muted);
   font-size: 13px;
   border-top: 1px dashed var(--border-soft);
+}
+
+/* Comments on this file that live on another surface (a commit, or the
+   working tree while viewing a commit). */
+.elsewhere {
+  padding: 8px 14px;
+  color: var(--muted);
+  font-size: 13px;
+  border-bottom: 1px dashed var(--border-soft);
+}
+section.file.collapsed .elsewhere { display: none; }
+
+/* Comments pinned to commits a rebase/amend removed from history. */
+#lost-comments {
+  margin-bottom: 20px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 10px 12px;
+}
+.lost-item + .lost-item { margin-top: 12px; }
+.lost-where {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.lost-item .cexcerpt {
+  margin: 0 0 6px;
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  overflow-x: auto;
+  white-space: pre;
 }
 
 /* binary / empty notices inside a file card */

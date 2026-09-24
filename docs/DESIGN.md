@@ -8,12 +8,13 @@ agent resuming work on this repo: read this before changing `server.py` or
 
 ## What it is
 
-A local, zero-dependency "PR review" UI for an agent's **uncommitted
-working-tree changes**. The reviewer comments in a browser; finishing a
-review renders the comments as **self-describing markdown** to paste to an
-agent (also written to `.gandalf/pending-review.md`), snapshots the review
-locally as an audit trail, and checkpoints the working tree so the next
-review can show only what changed since.
+A local, zero-dependency "PR review" UI for an agent's changes: its
+**uncommitted working-tree changes** by default, and also the branch's
+commits, one at a time or as a range. The reviewer comments in a browser;
+finishing a review renders the comments as **self-describing markdown** to
+paste to an agent (also written to `.gandalf/pending-review.md`), snapshots
+the review locally as an audit trail, and checkpoints the working tree so the
+next review can show only what changed since.
 
 ## Hard invariants (do not regress; ask before relaxing)
 
@@ -24,8 +25,9 @@ review can show only what changed since.
   non-local request — keep it intact. Requests are guarded against DNS
   rebinding (Host header check) and cross-site requests (Origin check).
 - **Read-only `.git` must work.** Every git call goes through `run_git()`
-  with `--no-optional-locks`. Staging is the *only* write path and must fail
-  gracefully (error toast, everything else keeps working).
+  with `--no-optional-locks`. Staging is the *only* write path into `.git`
+  and must fail gracefully (error toast, everything else keeps working).
+  Snapshot trees are written to gandalf's own object store, never `.git`.
 - **Never auto-refresh.** On working-tree drift, show the sticky "diff is out
   of date" banner with a Refresh button. Never yank the view.
 - **Predictable draft anchoring** (rule below). No fuzzy matching without
@@ -58,21 +60,21 @@ review can show only what changed since.
 
 | Route | Method | Purpose |
 | --- | --- | --- |
-| `/api/review[?since=N][&ws=1]` | GET | Review payload; `since` = delta view vs review N's snapshot; `ws=1` = ignore whitespace |
+| `/api/review[?since=N\|commit=SHA\|all=1][&ws=1]` | GET | Review payload for a view (see Views); `ws=1` = ignore whitespace |
 | `/api/status[?ws=1]` | GET | `{fingerprint, head}` for staleness polling (every 4 s, page-visible only); pass the same `ws` the review used |
-| `/api/file?path=` | GET | Working-tree file lines (context expansion) |
+| `/api/file?path=[&rev=SHA]` | GET | File lines in the working tree or at a commit (context expansion) |
 | `/api/revision?n=` / `/api/revision-md?n=` | GET | Audit-trail snapshot / its markdown |
 | `/api/drafts` | POST | Replace the draft set (autosave, debounced 400 ms) |
 | `/api/viewed` | POST | `{path, sig, viewed}` — persist a Viewed mark |
-| `/api/submit` | POST | Finish review: snapshot, markdown, clear drafts |
+| `/api/submit` | POST | `{comments, ignoreWs, view}` — finish review: snapshot, markdown, clear drafts |
 | `/api/reset-history` | POST | `{scope: "branch"\|"all"}` — delete submitted reviews + snapshots, keep drafts |
 | `/api/stage` | POST | Stage/unstage file or hunk (needs writable `.git`) |
 
 ## Diff scope & rendering
 
-- Diff is `working tree vs --base` (default `HEAD`), staged and unstaged
-  alike, plus untracked files (synthesized as all-added). `.gandalf/` is
-  excluded.
+- The default diff is `working tree vs --base` (default `HEAD`), staged and
+  unstaged alike, plus untracked files (synthesized as all-added).
+  `.gandalf/` is excluded. The other views are under "Views" below.
 - Files > 5 MB (`MAX_FILE_BYTES`) and binary files are listed but not
   rendered.
 - **Ignore whitespace** (checkbox in the Settings gear panel; per-machine
@@ -84,9 +86,8 @@ review can show only what changed since.
   staging keeps working), the topbar shows "ignoring whitespace", and the
   staleness fingerprint is view-scoped — a whitespace-only edit doesn't trip
   the banner because the rendered view wouldn't change. Submitting freezes
-  the audit diff as the reviewer saw it, but the content snapshot always
-  covers the plain changed-file set so later deltas don't resurface
-  pre-review whitespace edits.
+  the audit diff as the reviewer saw it; the snapshot tree is always the
+  real working tree.
 - **Inline vs split** (the `Inline | Split` segmented control in the topbar;
   per-machine localStorage, like the code font): inline is the unified
   single-column table. Split puts the old side left and the new side right in
@@ -142,7 +143,7 @@ review can show only what changed since.
 A GitHub-style navigator for the files in the current view. It only
 navigates: clicking a row scrolls to that file's card and changes nothing
 else — not fold state, not Viewed, not a comment. It lists exactly the files
-the page is showing, so it narrows with the delta view, and audit-trail
+the page is showing, so it follows the current view, and audit-trail
 revisions (read-only history) never appear in it.
 
 - **Folders fold** (per-folder carets, plus one ⊟/⊞ control for the whole
@@ -248,56 +249,106 @@ the deletion leaves the diff. New-side anchoring searches the working tree
 regardless of whether the file is in the current view, so switching views
 can't falsely detach a draft.
 
-## Review loops (the delta view)
+## Views: what is being reviewed
 
-Nothing is committed or staged between review rounds, so git alone can't
-answer "what changed since my last review". Instead:
+The topbar **view picker** chooses what the page diffs. There are four kinds,
+deliberately few, and every one runs through the same parsing/rendering
+pipeline:
 
-- **Finish review snapshots** the working-tree contents of every file in the
-  review to `revisions/<n>.files.json` (zlib+base64; binary/too-large files
-  store markers with sha/stat).
-- The topbar **baseline picker** (visible once a snapshot exists) offers
-  "All changes" and "Since review rN" for every snapshotted revision.
-  `GET /api/review?since=N` diffs snapshot → working tree per file with
-  `git diff --no-index` on temp files — no repo state involved, read-only
-  safe, same unified format, one parsing/rendering pipeline for both views.
-- Files untouched since the review drop out. New files show as added;
-  reverts show as reverts.
-- **Snapshot-missing files fall back to the base-ref blob** as their
-  baseline (`base_ref_entry`): a file that wasn't in review N was identical
-  to the base at that time (else it would have been in the diff), so a file
-  first touched *after* a review shows only its new edits, not the whole
-  file. Files unknown to the base ref are truly new and show in full.
-  Caveat: this assumes the base ref doesn't move mid-loop.
-- **Staging is disabled in the delta view** (`file.delta`) — its hunks are
-  not HEAD-relative and `git apply --cached` would corrupt the index.
-- **Old-side comments are per-view**: a comment on deleted lines carries the
-  `baseline` it was made against and only anchors in that view; elsewhere it
-  renders in the "not attached to visible lines" bucket rather than on a
-  coincidentally same-numbered line. New-side comments anchor identically in
-  every view. In markdown these read "on code removed since review rN".
-- Finishing a review **auto-advances the baseline** to the new revision, so
-  the page reads "No changes since review rN" until the agent resumes. The
-  choice persists per tab (sessionStorage); a stale baseline falls back to
-  the full view with a toast.
-- Viewed marks share one per-path signature map across views; any change to
-  a file invalidates its mark in both.
+| View | Old side → new side | Query |
+| --- | --- | --- |
+| Default ("Uncommitted changes") | `--base` → working tree | none |
+| Since review rN | review rN's snapshot → working tree | `since=N` |
+| One commit | its first parent → the commit | `commit=SHA` |
+| All changes since main | the branch point → working tree | `all=1` |
+
+- `--base` is resolved to its **merge-base with HEAD**, so `--base main`
+  reviews what this branch changed (GitHub's `main...HEAD`), not a revert of
+  whatever landed on main since. For the default `HEAD` that is a no-op.
+- The commit list is just **what is on this branch**: HEAD's first-parent
+  history back to, not including, the **branch point** (the merge-base with
+  `origin/HEAD`, `main` or `master`), newest first, capped at 100. On the
+  default branch itself that is empty; with no default branch at all it falls
+  back to the most recent commits. "All changes since main" (named for
+  whichever default branch was found) is offered only off the default branch,
+  and only when it differs from the default view. A commit that is not an
+  ancestor of the last review's HEAD is marked **new since rN**; commits that
+  carry comments show a count.
+- The choice persists per tab (sessionStorage). A view that stopped existing
+  (wiped snapshot, rewritten commit) falls back to the default with a toast.
+- In every view but "one commit", the new side is the working tree — which is
+  why draft anchoring, context expansion and "Line N = working tree now" work
+  unchanged. A commit view's new side is the commit: context expansion reads
+  it (`/api/file?rev=`), and nothing there goes stale, so it isn't polled.
+- **Staging only exists where the diff is relative to HEAD**: the server only
+  reports staged state (`stagedState`) for a base view whose base is HEAD, and
+  no staged state means no staging buttons.
+- Viewed marks are keyed per path in the working-tree views (one map, shared,
+  so any change to a file invalidates its mark in all of them) and per
+  commit + path in a commit view (`file.viewedKey`).
+
+### Review snapshots (git trees)
+
+Nothing need be committed between review rounds, so a review can't just
+record a commit. Instead **finishing a review snapshots the whole working
+tree as a git tree object** and records `{tree, head, headSha}` in the
+revision index. "Since review rN" is then a plain `git diff <tree rN> <tree
+now>`, so it is unaffected by commits, rebases or a moving base, and renames
+come for free.
+
+- The tree is built with a temporary index (a copy of the repo's, so `add`
+  can trust its stat cache) and `GIT_OBJECT_DIRECTORY=<state>/objects` with
+  the repo's objects as an alternate. Only uncommitted content is written, and
+  only there: **`.git` is never written to**, so read-only mounts work. The
+  "now" side of the since view is snapshotted the same way on every load.
+- Trade-off: a snapshot's blobs that were already in `.git` aren't copied, so
+  a `git gc` that prunes objects only rebased-away commits used can break an
+  old snapshot. That surfaces as the stale-view fallback.
+- Revisions without a `tree` (the pre-2026-09 JSON snapshots) stay in the
+  audit trail but can't be diffed against.
+- Finishing a review **switches the view to "since" the new revision**, so
+  the page reads "No changes since review rN" until the agent resumes.
+
+### Comments across views
+
+- **Old-side comments are per-view**: a comment on deleted lines records
+  which old side it was made against — `base` (the base commit: `--base` or
+  the branch point), `baseline`
+  (a review number) or `commit` — and only anchors in a view with the same old
+  side (`oldSideKey`/`old_side_key`); elsewhere it renders in the "not
+  attached to visible lines" bucket rather than on a coincidentally
+  same-numbered line. New-side comments anchor identically in every
+  working-tree view.
+- **Comments made in a commit view are pinned to that commit** (`commit:
+  SHA`, both sides, file-level too). A commit never changes, so they are never
+  re-anchored and their line numbers stay exact.
+- Comments live on a **surface** — the working tree, or one commit (replies
+  follow their root) — and only show inline in views of that surface. Other
+  views show a per-file note ("☗ 2 comments on commit abc1234 · Show") that
+  switches to that view. Guessing where a commit comment lands in the working
+  tree would be fuzzy re-anchoring, which the anchoring rule forbids.
+- A pinned commit that is no longer an ancestor of HEAD (amend, rebase) can't
+  be viewed, so its comments gather in a **"Comments on commits no longer in
+  history"** bucket above the files, with their quoted code. No `patch-id`
+  matching, deliberately.
+- Every draft, whatever its surface, is part of the review and the handoff.
 
 ### Wiping review history
 
-Git surgery — a rebase, a reset, a re-created branch — can leave the
-snapshots the "since review rN" baselines diff against describing a tree that
-no longer exists. **Wipe review history** (gear panel → its own confirmation
-dialog → `POST /api/reset-history {scope: "branch"|"all"}`) deletes
-`revisions/` and empties the revision index for the current branch, or for
-every branch under `branches/`, and removes `pending-review.md` so no agent
-can act on a review that no longer exists.
+Git surgery — a rebase, a reset, a re-created branch — makes old snapshots
+diff against a tree that may no longer mean much (it stays a *valid* diff,
+just a bigger one). **Wipe review history** (gear panel → its own
+confirmation dialog → `POST /api/reset-history {scope: "branch"|"all"}`)
+deletes `revisions/` and empties the revision index for the current branch,
+or for every branch under `branches/` (which also drops the shared
+`objects/` store), and removes `pending-review.md` so no agent can act on a
+review that no longer exists.
 
 - **Drafts and Viewed marks are kept**, always and in both scopes: they are
   the review in progress, not history. That is the one rule the dialog states.
-- Numbering restarts at r1; the baseline picker and audit trail disappear and
-  the page falls back to the full diff (the client also drops its remembered
-  baseline, so other tabs land on the existing "no snapshot for rN" fallback).
+- Numbering restarts at r1; the "since" views and audit trail disappear and
+  the page falls back to the default view (the client also drops its
+  remembered view, so other tabs land on the stale-view fallback).
 - Deliberately behind the gear, behind a confirmation, with no keyboard
   shortcut and no undo — it is the only action in the tool that destroys
   state. A wipe with nothing to delete is not an error; it says so.
@@ -306,20 +357,25 @@ can act on a review that no longer exists.
 
 - **Finish review (N)** opens a dialog (comment tally + optional overall
   comment). Confirming POSTs `/api/submit`, which writes
-  `revisions/<n>.json` (comments + full diff at submit time), the content
-  snapshot, and `.gandalf/pending-review.md`, then clears drafts.
+  `revisions/<n>.json` (comments + the diff of the view the reviewer was in),
+  the snapshot tree, and `.gandalf/pending-review.md`, then clears drafts.
 - The handoff is **self-describing markdown**: a preamble explains line-number
   semantics ("Line N" = working tree now; "on deleted code" = base version;
   detached = follow the quoted code), then per-file sections, each comment
-  with its range, `+`/`-`/space-prefixed excerpt, and text. An agent needs
-  zero knowledge of gandalf; the whole prompt can be *"Read
+  with its range, `+`/`-`/space-prefixed excerpt, and text. Commit-pinned
+  comments follow in one `## Commit <short> — <subject>` section per commit,
+  oldest first (rewritten ones last, marked "no longer in history"), with
+  `###` file sections; the preamble says their line numbers are that
+  commit's, and to fix the current code rather than rewrite history. An agent
+  needs zero knowledge of gandalf; the whole prompt can be *"Read
   `.gandalf/pending-review.md` and do what it says."*
 - A second dialog shows the rendered markdown with a **Copy feedback**
   button (explicit, repeatable — clipboard writes happen on their own click;
   `ClipboardItem` fed a promise for Safari/Firefox gesture rules).
 - The **audit trail** lists past revisions chronologically (newest last,
   nearest the fresh changes), each expandable to its frozen diff+comments and
-  re-copyable via **Copy for agent** (`/api/revision-md`).
+  re-copyable via **Copy for agent** (`/api/revision-md`). Only comments on
+  the frozen view's surface show inline there; the markdown has them all.
 - Submit flushes the debounced draft save first so it can't land mid-submit
   and resurrect consumed drafts.
 
@@ -328,8 +384,9 @@ can act on a review that no longer exists.
 - File-level Stage/Unstage buttons per file header (with staged/partially-
   staged badge); hunk-level Stage/Unstage on hunk headers of `modified`
   files. Added/deleted/renamed/binary files stage at file level only.
-  Hunk staging is unavailable in the delta view and while ignoring
-  whitespace (those hunks aren't valid HEAD-relative patches).
+  Staging only appears in views relative to HEAD (see Views), and hunk
+  staging is unavailable while ignoring whitespace (those hunks aren't valid
+  patches).
 - Per-hunk staged detection is content-based (identical hunk exists in the
   index), so identical duplicate hunks in one file could confuse the badge —
   the underlying git state is always right.
@@ -353,11 +410,12 @@ with `keepalive` (a normal fetch is cancelled as the page goes away).
 ```
 .gandalf/
   pending-review.md              # agent-facing handoff: latest review only
+  objects/                       # git objects for snapshot trees (shared by
+                                 # all branches; alternates onto .git)
   branches/<branch-slug>/
     state.json                   # drafts, viewed map, revision index
-    revisions/<n>.json           # per submission: comments + full diff then
-    revisions/<n>.files.json     # per submission: reviewed files' contents
-                                 # (zlib) — the "since review rN" baseline
+                                 # (each revision's tree + head)
+    revisions/<n>.json           # per submission: comments + diff then
 ```
 
 Branch-scoped; detached HEAD uses `detached-<sha>`. All writes are atomic

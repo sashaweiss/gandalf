@@ -45,20 +45,32 @@ const EXPAND_STEP = 20;
 let review = null; // /api/review payload
 let drafts = [];   // draft comments, mirrored to the server as they change
 
-// What the working tree is diffed against: null = the base ref (the full
-// diff), a revision number = that review's snapshot (only what changed since
-// it). Remembered per tab so a mid-loop page reload keeps the lens.
-const BASELINE_KEY = 'gandalf.baseline';
-let baseline = null;
-try { baseline = +sessionStorage.getItem(BASELINE_KEY) || null; } catch (_) { /* fine */ }
+// What the page shows: '' = the default (working tree vs the base ref),
+// 'since:N' (review rN's snapshot -> working tree), 'commit:SHA' (one commit
+// vs its parent) or 'all:1' (everything since the branch left the default
+// branch). Remembered per tab so a mid-loop page reload keeps the lens.
+const LENS_KEY = 'gandalf.view';
+let viewKey = '';
+try { viewKey = sessionStorage.getItem(LENS_KEY) || ''; } catch (_) { /* fine */ }
 
-function setBaseline(n) {
-  baseline = n;
+function setViewKey(k) {
+  viewKey = k || '';
   try {
-    if (n == null) sessionStorage.removeItem(BASELINE_KEY);
-    else sessionStorage.setItem(BASELINE_KEY, String(n));
+    if (!viewKey) sessionStorage.removeItem(LENS_KEY);
+    else sessionStorage.setItem(LENS_KEY, viewKey);
   } catch (_) { /* private mode etc.; the in-memory value still works */ }
 }
+
+// The key for the view actually on screen (the inverse of fetchReview).
+function currentViewKey() {
+  const v = review && review.view;
+  if (!v) return '';
+  if (v.kind === 'since') return 'since:' + v.since;
+  if (v.kind === 'commit') return 'commit:' + v.commit;
+  return v.all ? 'all:1' : '';
+}
+
+const isCommitView = () => !!(review && review.view.kind === 'commit');
 
 // Ignore-whitespace is a per-machine display preference (like the code
 // font): the server diffs with `-w`, so whitespace-only changes neither
@@ -107,7 +119,8 @@ const splitView = () => diffView === 'split' && wideEnough();
 
 function fetchReview() {
   const params = new URLSearchParams();
-  if (baseline) params.set('since', baseline);
+  const [kind, arg] = viewKey.split(':');
+  if (arg) params.set(kind, arg);
   if (ignoreWs) params.set('ws', '1');
   const qs = params.toString();
   return api('/api/review' + (qs ? '?' + qs : ''));
@@ -125,8 +138,41 @@ function getUI(path) {
   return fileUI.get(path);
 }
 
+// Where a comment lives: 'worktree' for the views whose new side is the
+// working tree, or 'commit:SHA' when it is pinned to a commit. It only shows
+// in views of its own surface. Replies live with their thread root.
+function surfaceOf(c, pool) {
+  if (c.parentId) {
+    const root = (pool || drafts).find((r) => r.id === c.parentId);
+    return root ? surfaceOf(root, pool) : 'worktree';
+  }
+  return c.commit ? 'commit:' + c.commit : 'worktree';
+}
+
+function surfaceOfView(view) {
+  return view && view.kind === 'commit' ? 'commit:' + view.commit : 'worktree';
+}
+
 function draftsFor(path) {
-  return drafts.filter((c) => c.file === path);
+  const s = surfaceOfView(review && review.view);
+  return drafts.filter((c) => c.file === path && surfaceOf(c) === s);
+}
+
+const lostCommits = () => new Set((review && review.lostCommits) || []);
+
+// A file's comments on other surfaces: [{surface, count}]. Comments on
+// rewritten commits are left out; they have their own bucket.
+function elsewhereFor(path) {
+  const here = surfaceOfView(review.view);
+  const lost = lostCommits();
+  const counts = new Map();
+  for (const c of drafts) {
+    if (c.file !== path) continue;
+    const s = surfaceOf(c);
+    if (s === here || lost.has(s.slice('commit:'.length))) continue;
+    counts.set(s, (counts.get(s) || 0) + 1);
+  }
+  return [...counts].map(([surface, count]) => ({ surface, count }));
 }
 
 function reviewLevelDrafts() {
@@ -232,19 +278,31 @@ function pairRows(rows) {
 /* -------------------------------------------------------------- rendering */
 
 // A comment on deleted lines belongs to the view it was drafted in (its
-// "old" line numbers point into that view's old side — the base ref, or a
-// review snapshot). In any other view it renders unattached rather than on
-// a coincidentally same-numbered line.
-function inView(c, viewBaseline) {
-  return c.side !== 'old' || (c.baseline ?? null) === (viewBaseline ?? null);
+// "old" line numbers point into that view's old side — a base commit, a
+// review snapshot, or a commit's parent). In any other view it renders
+// unattached rather than on a coincidentally same-numbered line. Mirrors
+// old_side_key in server.py.
+function oldSideKey(c) {
+  if (c.commit) return 'commit:' + c.commit;
+  if (c.baseline) return 'since:' + c.baseline;
+  return 'base:' + (c.base || '');
 }
 
-function commentsByAnchor(comments, viewBaseline) {
+function viewOldKey(view) {
+  if (!view) return 'base:';
+  return view.kind === 'since' ? 'since:' + view.since : view.kind + ':' + (view[view.kind] || '');
+}
+
+function inView(c, oldKey) {
+  return c.side !== 'old' || oldSideKey(c) === oldKey;
+}
+
+function commentsByAnchor(comments, oldKey) {
   const m = new Map();
   for (const c of comments) {
     if (c.fileLevel) continue; // rendered at the top of the file card
     if (c.parentId) continue;  // replies render inside their parent's thread
-    if (c.detached || !inView(c, viewBaseline)) continue; // both render in the bottom bucket
+    if (c.detached || !inView(c, oldKey)) continue; // both render in the bottom bucket
     const k = c.side + ':' + c.endLine;
     if (!m.has(k)) m.set(k, []);
     m.get(k).push(c);
@@ -258,10 +316,10 @@ function commentsByAnchor(comments, viewBaseline) {
   return m;
 }
 
-function coverageSet(comments, viewBaseline) {
+function coverageSet(comments, oldKey) {
   const s = new Set();
   for (const c of comments) {
-    if (c.fileLevel || c.parentId || c.detached || !inView(c, viewBaseline)) continue;
+    if (c.fileLevel || c.parentId || c.detached || !inView(c, oldKey)) continue;
     for (let n = c.startLine; n <= c.endLine; n++) s.add(c.side + ':' + n);
   }
   return s;
@@ -443,11 +501,11 @@ function hunkHeadHtml(file, r, readOnly, cols) {
   const label = `@@ -${h.oldStart},${h.oldCount} +${h.newStart},${h.newCount} @@` +
     (h.section ? ' ' + h.section : '');
   let btn = '';
-  // Delta-view hunks are relative to a review snapshot, not HEAD, and a
+  // Only HEAD-relative views carry staged state (stagedState != null), and a
   // hunk parsed from a `-w` diff is not a valid patch — neither can be
-  // staged. (File-level staging stays available.)
+  // staged. (File-level staging stays available under -w.)
   const hunkStageable = !readOnly && !file.binary && file.status === 'modified'
-    && !file.delta && !(review && review.ignoreWhitespace);
+    && file.stagedState != null && !(review && review.ignoreWhitespace);
   if (hunkStageable) {
     btn = h.staged
       ? `<span class="staged-tick">staged ✓</span><button class="hh-btn" data-hact="unstage-hunk" data-hunk="${r.hunkIdx}">Unstage hunk</button>`
@@ -505,6 +563,8 @@ function buildFileSection(file, comments, ui, opts) {
   // a file Viewed wipes that state (see the viewed-box change handler).
   // In read-only history the body is kept and just hidden with CSS.
   if (!ui.collapsed || readOnly) {
+    const elsewhere = (opts && opts.elsewhere) || [];
+    if (elsewhere.length) parts.push(elsewhereHtml(elsewhere));
     // File-level comments sit above the diff; they have no lines to anchor to.
     const strip = [];
     for (const c of comments.filter((c) => c.fileLevel)) {
@@ -524,9 +584,9 @@ function buildFileSection(file, comments, ui, opts) {
       const split = !!(opts && opts.split);
       const cols = split ? 8 : 5;
       const rows = buildRows(file, ui);
-      const viewBaseline = (opts && opts.baseline) ?? null;
-      const anchors = commentsByAnchor(comments, viewBaseline);
-      const covered = coverageSet(comments, viewBaseline);
+      const oldKey = opts && opts.oldKey;
+      const anchors = commentsByAnchor(comments, oldKey);
+      const covered = coverageSet(comments, oldKey);
       const rendered = new Set();
       const hl = makeHighlighter(file.path);
       // Split declares its columns up front: with `table-layout: fixed` the two
@@ -596,11 +656,34 @@ function buildFileSection(file, comments, ui, opts) {
   return tpl.content.firstElementChild;
 }
 
+// Comments on a file that live on another surface (see surfaceOf) never show
+// inline here; a note says where they are and switches to that view.
+function elsewhereHtml(list) {
+  return '<div class="elsewhere">' + list.map(({ surface, count }) => {
+    const n = `☗ ${count} comment${count === 1 ? '' : 's'}`;
+    if (surface === 'worktree') {
+      return `<div>${n} on the working tree
+        <button class="plain-link" data-goview="">Show</button></div>`;
+    }
+    const sha = surface.slice('commit:'.length);
+    const c = (review.commits || []).find((x) => x.sha === sha);
+    return `<div>${n} on commit <code>${esc(c ? c.short : sha.slice(0, 7))}</code>`
+      + `${c ? ' ' + esc(c.subject) : ''}
+      <button class="plain-link" data-goview="commit:${esc(sha)}">Show</button></div>`;
+  }).join('') + '</div>';
+}
+
+function fileOpts(path) {
+  return {
+    readOnly: false, oldKey: viewOldKey(review.view), split: splitView(),
+    elsewhere: elsewhereFor(path),
+  };
+}
+
 function renderFile(path) {
   const file = review.files.find((f) => f.path === path);
   if (!file) return;
-  const fresh = buildFileSection(file, draftsFor(path), getUI(path),
-    { readOnly: false, baseline: review.since, split: splitView() });
+  const fresh = buildFileSection(file, draftsFor(path), getUI(path), fileOpts(path));
   const old = fileSections.get(path);
   if (old) old.replaceWith(fresh);
   fileSections.set(path, fresh);
@@ -618,15 +701,17 @@ function renderFiles() {
   container.textContent = '';
   fileSections.clear();
   for (const f of review.files) {
-    const sec = buildFileSection(f, draftsFor(f.path), getUI(f.path),
-      { readOnly: false, baseline: review.since, split: splitView() });
+    const sec = buildFileSection(f, draftsFor(f.path), getUI(f.path), fileOpts(f.path));
     fileSections.set(f.path, sec);
     container.appendChild(sec);
   }
+  const v = review.view;
   $('#empty-state').hidden = review.files.length > 0;
-  $('#empty-state p').textContent = review.since
-    ? `No changes since review r${review.since}.`
+  $('#empty-state p').textContent = v.kind === 'since' ? `No changes since review r${v.since}.`
+    : v.kind === 'commit' ? `Commit ${v.short} changes no files.`
+    : v.all ? `No changes since ${v.all}.`
     : 'No changes between the working tree and the base ref.';
+  renderLost();
   updateTopbar();
   renderTree();
   syncActiveFromScroll();
@@ -641,7 +726,11 @@ function updateTopbar() {
   // "Working tree vs HEAD" is the default and goes unsaid; only a custom
   // --base is worth calling out.
   const baseNote = review.base === 'HEAD' ? '' : ` vs <code>${esc(review.base)}</code>`;
-  const sinceNote = review.since ? ` · <span class="delta-note">since review r${review.since}</span>` : '';
+  const v = review.view;
+  const viewNote = v.kind === 'since' ? `since review r${v.since}`
+    : v.kind === 'commit' ? `commit ${esc(v.short)} only`
+    : v.all ? `all changes since ${esc(v.all)}` : '';
+  const sinceNote = viewNote ? ` · <span class="delta-note">${viewNote}</span>` : '';
   const wsNote = review.ignoreWhitespace ? ' · <span class="delta-note">ignoring whitespace</span>' : '';
   info.innerHTML = `<span class="info-line"><code>${esc(review.repo)}</code> on <code>${esc(review.branch)}</code>${baseNote}</span>
     <span class="info-line muted">${review.files.length} file${review.files.length === 1 ? '' : 's'}
@@ -650,24 +739,84 @@ function updateTopbar() {
   // Always enabled: a review can be just an overall comment from the dialog.
   btn.disabled = false;
   btn.textContent = drafts.length ? `Finish review (${drafts.length})` : 'Finish review';
+  renderViewSelect(); // its commit labels carry comment counts
 }
 
-// The baseline picker only appears once there is a snapshot to diff against.
-// Selecting a review shows just what changed since it was finished.
-function renderBaselineSelect() {
-  const sel = $('#baseline-select');
-  const snaps = (review.revisions || []).filter((r) => r.hasSnapshot).reverse();
-  sel.hidden = snaps.length === 0;
+// The view picker, top to bottom: the default diff, "since review rN" for
+// every snapshot, each commit on its own, and everything since the branch
+// left the default branch. Commits list just HEAD's branch, newest first,
+// marked when they are new since the last review or carry comments.
+function renderViewSelect() {
+  const sel = $('#view-select');
   sel.textContent = '';
-  for (const [value, label] of [['', 'All changes'],
-      ...snaps.map((r) => [String(r.revision), `Since review r${r.revision}`])]) {
+  const add = (parent, value, label) => {
     const o = document.createElement('option');
     o.value = value;
     o.textContent = label;
-    sel.appendChild(o);
+    parent.appendChild(o);
+  };
+  const group = (label) => {
+    const g = document.createElement('optgroup');
+    g.label = label;
+    sel.appendChild(g);
+    return g;
+  };
+  add(sel, '', review.base === 'HEAD' ? 'Uncommitted changes' : `All changes vs ${review.base}`);
+  const snaps = (review.revisions || []).filter((r) => r.tree).reverse();
+  if (snaps.length) {
+    const g = group('Since a review');
+    for (const r of snaps) add(g, 'since:' + r.revision, `Since review r${r.revision}`);
   }
-  sel.value = review.since ? String(review.since) : '';
-  sel.classList.toggle('delta-on', !!review.since);
+  const commits = review.commits || [];
+  if (commits.length) {
+    const last = snaps[0];
+    const counts = new Map();
+    for (const c of drafts) {
+      const s = surfaceOf(c);
+      if (s !== 'worktree') counts.set(s, (counts.get(s) || 0) + 1);
+    }
+    const label = (c) => {
+      const subject = c.subject.length > 60 ? c.subject.slice(0, 59) + '…' : c.subject;
+      const n = counts.get('commit:' + c.sha);
+      return `${c.short} ${subject}`
+        + (c.new && last ? ` · new since r${last.revision}` : '')
+        + (n ? ` · ☗ ${n}` : '');
+    };
+    const one = group('One commit');
+    for (const c of commits) add(one, 'commit:' + c.sha, label(c));
+  }
+  if (review.allChanges) add(sel, 'all:1', `All changes since ${review.allChanges}`);
+  // A view of a commit beyond the list still needs an entry to show.
+  const key = currentViewKey();
+  const v = review.view;
+  if (v.kind === 'commit' && ![...sel.options].some((o) => o.value === key)) {
+    add(sel, key, `${v.short} ${v.subject || ''}`);
+  }
+  sel.value = key;
+  sel.classList.toggle('delta-on', key !== '');
+}
+
+// Comments pinned to a commit that a rebase or amend took out of HEAD's
+// history: that commit can't be viewed any more, so they gather here with
+// their quoted code. They are still part of the review.
+function renderLost() {
+  const lost = lostCommits();
+  const roots = drafts.filter((c) => !c.parentId && c.commit && lost.has(c.commit));
+  const box = $('#lost-comments');
+  box.hidden = roots.length === 0;
+  if (!roots.length) { box.textContent = ''; return; }
+  box.innerHTML = '<h2>Comments on commits no longer in history</h2>' + roots.map((c) => {
+    const replies = drafts.filter((r) => r.parentId === c.id);
+    const excerpt = c.excerpt && c.excerpt.length
+      ? `<pre class="cexcerpt">${esc(c.excerpt.join('\n'))}</pre>` : '';
+    return `<div class="lost-item">
+      <div class="lost-where"><code>${esc(c.file)}</code> · commit
+        <code>${esc(c.commit.slice(0, 7))}</code><span class="spacer"></span>
+        <button class="danger-link" data-ldel="${esc(c.id)}">Delete</button></div>
+      ${excerpt}
+      <div class="thread">${[c, ...replies].map((e) => commentBoxHtml(e, true)).join('')}</div>
+    </div>`;
+  }).join('');
 }
 
 /* -------------------------------------------------------------- file tree */
@@ -1014,7 +1163,11 @@ async function loadRevision(details, n) {
     body.textContent = '';
     const note = document.createElement('div');
     note.className = 'rev-note';
-    note.textContent = `Submitted ${new Date(snap.submittedAt).toLocaleString()} against ${snap.base}`
+    const v = snap.view || { kind: 'base' };
+    const what = v.kind === 'since' ? `changes since review r${v.since}`
+      : v.kind === 'commit' ? `commit ${v.short}`
+      : v.all ? `all changes since ${v.all}` : `changes vs ${snap.base}`;
+    note.textContent = `Submitted ${new Date(snap.submittedAt).toLocaleString()} from ${what}`
       + ` (head ${snap.head}). The diff is shown as it was at submit time.`;
     body.appendChild(note);
     const overall = (snap.comments || []).filter((c) => c.reviewLevel);
@@ -1024,11 +1177,15 @@ async function loadRevision(details, n) {
       wrap.innerHTML = overall.map((c) => commentBoxHtml(c, true)).join('');
       body.appendChild(wrap);
     }
+    // Only the comments that belonged to the frozen view show inline; the
+    // handoff markdown (Copy for agent) has every one of them.
+    const surface = surfaceOfView(v);
     for (const f of snap.files) {
-      const comments = snap.comments.filter((c) => c.file === f.path);
+      const comments = snap.comments.filter((c) => c.file === f.path
+        && surfaceOf(c, snap.comments) === surface);
       const ui = { collapsed: comments.length === 0, expansions: {}, content: null, form: null };
       body.appendChild(buildFileSection(f, comments, ui,
-        { readOnly: true, split: splitView() }));
+        { readOnly: true, oldKey: viewOldKey(v), split: splitView() }));
     }
     if (!snap.files.length) {
       body.appendChild(Object.assign(document.createElement('div'),
@@ -1077,12 +1234,30 @@ function openForm(path, startDi, endDi, col) {
   const a = selectionAnchor(rows);
   ui.form = {
     startDi, endDi, side: a.side, startLine: a.startLine, endLine: a.endLine,
-    // Old-side line numbers are meaningful only in the view they came from.
-    baseline: a.side === 'old' ? (review.since ?? null) : null,
-    excerpt: a.excerpt,
+    excerpt: a.excerpt, ...viewAnchor(a.side),
   };
   ui.formText = '';
   renderFile(path);
+}
+
+// What ties a new comment to the view it was made in: a commit view pins it
+// to that commit outright; elsewhere only old-side line numbers need to know
+// which old side they came from (see oldSideKey).
+function viewAnchor(side) {
+  const v = review.view;
+  if (v.kind === 'commit') return { commit: v.commit };
+  if (side !== 'old') return {};
+  return v.kind === 'since' ? { baseline: v.since } : { base: v.base };
+}
+
+// The stored fields of a line comment drafted through form `f`.
+function lineFields(f) {
+  return {
+    side: f.side, baseline: f.baseline ?? null, base: f.base ?? null,
+    commit: f.commit ?? null, startLine: f.startLine, endLine: f.endLine,
+    origStart: f.startLine, // where it was drafted; anchors may follow the code
+    excerpt: f.excerpt,
+  };
 }
 
 // Never lose typed text: stash an open form's state before anything replaces
@@ -1109,15 +1284,11 @@ function stashForm(path) {
   }
   const c = { id: genId(), file: path, text, wip: true, createdAt: new Date().toISOString() };
   if (f.fileLevel) {
-    c.fileLevel = true;
+    Object.assign(c, { fileLevel: true, commit: f.commit ?? null });
   } else if (f.replyTo) {
     c.parentId = f.replyTo;
   } else {
-    Object.assign(c, {
-      side: f.side, baseline: f.baseline ?? null,
-      startLine: f.startLine, endLine: f.endLine,
-      origStart: f.startLine, excerpt: f.excerpt,
-    });
+    Object.assign(c, lineFields(f));
   }
   drafts.push(c);
   scheduleDraftSave();
@@ -1131,7 +1302,7 @@ function openFileForm(path) {
   stashForm(path);
   const ui = getUI(path);
   ui.collapsed = false; // the form lives in the body
-  ui.form = { fileLevel: true };
+  ui.form = { fileLevel: true, ...viewAnchor('new') };
   ui.formText = '';
   renderFile(path);
 }
@@ -1153,6 +1324,7 @@ function saveForm(path) {
       id: genId(),
       file: path,
       fileLevel: true,
+      commit: f.commit ?? null,
       text,
       createdAt: new Date().toISOString(),
     });
@@ -1168,12 +1340,7 @@ function saveForm(path) {
     drafts.push({
       id: genId(),
       file: path,
-      side: f.side,
-      baseline: f.baseline ?? null,
-      startLine: f.startLine,
-      endLine: f.endLine,
-      origStart: f.startLine, // where it was drafted; anchors may follow the code
-      excerpt: f.excerpt,
+      ...lineFields(f),
       text,
       createdAt: new Date().toISOString(),
     });
@@ -1197,7 +1364,9 @@ async function expandGap(path, gapId, act) {
   const ui = getUI(path);
   if (!ui.content) {
     try {
-      const res = await api('/api/file?path=' + encodeURIComponent(path));
+      // A commit view's new side is that commit, not the working tree.
+      const rev = isCommitView() ? '&rev=' + review.view.commit : '';
+      const res = await api('/api/file?path=' + encodeURIComponent(path) + rev);
       ui.content = res.lines;
     } catch (e) {
       toast('Cannot expand context: ' + e.message);
@@ -1284,6 +1453,9 @@ function wireEvents() {
     const fcomment = e.target.closest('button[data-fcomment]');
     if (fcomment) { openFileForm(path); return; }
 
+    const goview = e.target.closest('button[data-goview]');
+    if (goview) { setViewKey(goview.dataset.goview); load(false); return; }
+
     const gapBtn = e.target.closest('tr.gap button');
     if (gapBtn) { expandGap(path, gapBtn.dataset.gap, gapBtn.dataset.act); return; }
 
@@ -1353,7 +1525,7 @@ function wireEvents() {
     }
     renderFile(path);
     // Persisted per branch; the server drops it if the file's diff changes.
-    postJson('/api/viewed', { path, viewed: on, sig: file.sig })
+    postJson('/api/viewed', { path: file.viewedKey || path, viewed: on, sig: file.sig })
       .catch((err) => toast('Could not save viewed state: ' + err.message));
   });
 
@@ -1421,10 +1593,18 @@ function wireEvents() {
   });
   $('#btn-review-dialog-close').addEventListener('click', () => $('#review-dialog').close());
 
-  $('#baseline-select').addEventListener('change', () => {
-    const v = $('#baseline-select').value;
-    setBaseline(v ? +v : null);
+  $('#view-select').addEventListener('change', () => {
+    setViewKey($('#view-select').value);
     load(false);
+  });
+
+  $('#lost-comments').addEventListener('click', (e) => {
+    const del = e.target.closest('button[data-ldel]');
+    if (!del) return;
+    const id = del.dataset.ldel;
+    drafts = drafts.filter((c) => c.id !== id && c.parentId !== id);
+    scheduleDraftSave();
+    renderFiles();
   });
 
   // ---- file tree (navigation only; nothing here edits the review) ----
@@ -1561,8 +1741,8 @@ async function resetHistory() {
   $('#reset-dialog').close();
   try {
     const res = await postJson('/api/reset-history', { scope });
-    // Every baseline just stopped existing; the full diff is the only view left.
-    setBaseline(null);
+    // Every snapshot just stopped existing; fall back to the default view.
+    setViewKey('');
     await load(false);
     toast(res.reviews
       ? `Wiped ${res.reviews} review${res.reviews === 1 ? '' : 's'}`
@@ -1624,12 +1804,14 @@ async function submitReview() {
     // Settle the pending draft save first so it can't land mid-submit and
     // resurrect the drafts this submission consumes.
     await flushDrafts();
-    const res = await postJson('/api/submit', { comments: drafts, ignoreWs });
+    const [kind, arg] = viewKey.split(':');
+    const res = await postJson('/api/submit',
+      { comments: drafts, ignoreWs, view: arg ? { [kind]: arg } : {} });
     drafts = [];
     openReviewDialog(res.revision, res.markdown);
-    // The next loop starts here: advance the baseline so the view behind the
-    // dialog becomes "what changed since the review just finished".
-    setBaseline(res.revision);
+    // The next loop starts here: switch the view behind the dialog to "what
+    // changed since the review just finished".
+    setViewKey('since:' + res.revision);
     await load(false);
   } catch (e) {
     toast('Finishing the review failed: ' + e.message);
@@ -1648,13 +1830,13 @@ async function load(isRefresh) {
     try {
       data = await fetchReview();
     } catch (e) {
-      // A remembered baseline can outlive its snapshot (cleared state, new
-      // branch): fall back to the full diff instead of a dead page.
-      if (baseline == null) throw e;
-      const missing = baseline;
-      setBaseline(null);
+      // A remembered view can outlive what it shows (a wiped snapshot, a
+      // rewritten commit, another branch): fall back to the default view
+      // instead of a dead page.
+      if (!viewKey) throw e;
+      setViewKey('');
       data = await fetchReview();
-      toast(`No snapshot for review r${missing} — showing all changes.`);
+      toast(`${e.message} — showing all changes.`);
     }
     review = data;
     drafts = Array.isArray(data.drafts) ? data.drafts : [];
@@ -1664,7 +1846,6 @@ async function load(isRefresh) {
     $('#stale').hidden = true;
     renderFiles();
     renderHistory();
-    renderBaselineSelect();
     if (isRefresh) toast('Diff refreshed.');
   } catch (e) {
     showError('Failed to load review: ' + e.message);
