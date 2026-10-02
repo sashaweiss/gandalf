@@ -979,7 +979,8 @@ def make_handler(repo, base, state_root, excludes, skip_prefixes):
                 route = url.path
                 if route == "/":
                     return self.serve_static("index.html")
-                if route in ("/style.css", "/app.js", "/highlight.js", "/index.html"):
+                if route in ("/style.css", "/app.js", "/highlight.js", "/index.html",
+                             "/favicon.svg"):
                     return self.serve_static(route.lstrip("/"))
                 if route == "/api/review":
                     return self.api_review(q)
