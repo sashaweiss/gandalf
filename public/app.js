@@ -1691,8 +1691,12 @@ function wireEvents() {
   // rather than yanking the view out from under the reviewer.
   setInterval(async () => {
     if (document.hidden || !review || !review.fingerprint) return;
+    const polled = review;
     try {
       const s = await api('/api/status' + (ignoreWs ? '?ws=1' : ''));
+      // A reload (e.g. after staging) can land while this poll is in
+      // flight; its answer then describes the old review, not this one.
+      if (review !== polled) return;
       $('#stale').hidden = s.fingerprint === review.fingerprint;
     } catch (_) { /* server briefly unavailable; try again next tick */ }
   }, 4000);
@@ -1760,6 +1764,9 @@ async function reloadPreservingUI() {
   const data = await fetchReview();
   review = data;
   drafts = Array.isArray(data.drafts) ? data.drafts : [];
+  // Freshly fetched, so not out of date (a poll racing the reload may
+  // have shown the banner).
+  $('#stale').hidden = true;
   renderFiles();
   renderHistory();
 }
