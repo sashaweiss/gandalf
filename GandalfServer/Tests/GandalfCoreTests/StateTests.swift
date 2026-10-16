@@ -105,11 +105,14 @@ import Testing
     @Test func safeRepoPathRejectsEscapes() throws {
         let tmp = try TempDir()
         try tmp.write("in.txt", "x")
-        _ = try Review.safeRepoPath(tmp.path, "in.txt")
-        _ = try Review.safeRepoPath(tmp.path, ".")
-        #expect(throws: ServerError.self) { try Review.safeRepoPath(tmp.path, "../x") }
-        #expect(throws: ServerError.self) { try Review.safeRepoPath(tmp.path, "/etc/passwd") }
-        #expect(throws: ServerError.self) { try Review.safeRepoPath(tmp.path, "a/../../x") }
+        // Resolved, as `ReviewConfig` guarantees (macOS temp dirs sit behind
+        // a symlink).
+        let repo = Paths.resolve(tmp.path)
+        _ = try Review.safeRepoPath(repo, "in.txt")
+        _ = try Review.safeRepoPath(repo, ".")
+        #expect(throws: ServerError.self) { try Review.safeRepoPath(repo, "../x") }
+        #expect(throws: ServerError.self) { try Review.safeRepoPath(repo, "/etc/passwd") }
+        #expect(throws: ServerError.self) { try Review.safeRepoPath(repo, "a/../../x") }
     }
 
     @Test func atomicWriteReplaces() throws {
