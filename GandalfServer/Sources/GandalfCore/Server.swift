@@ -3,8 +3,10 @@ import NIOCore
 import NIOHTTP1
 import NIOPosix
 
-/// Loopback-only HTTP/1.1 server in front of a `Router`. Requests run on a
-/// thread pool because the review logic blocks on git.
+/// Loopback-only HTTP/1.1 server in front of a `Router`. Requests run off the
+/// event loop because the review logic blocks on git, but one at a time: the
+/// only client is a single page, and concurrent Process launches proved
+/// unreliable (intermittent EBADF from posix_spawn).
 public final class Server: Sendable {
     public let router: Router
     public let port: Int
@@ -20,7 +22,7 @@ public final class Server: Sendable {
     public init(router: Router, port: Int) throws {
         self.router = router
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        let pool = NIOThreadPool(numberOfThreads: 8)
+        let pool = NIOThreadPool(numberOfThreads: 1)
         pool.start()
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(.socketOption(.so_reuseaddr), value: 1)
