@@ -1,4 +1,5 @@
 import Foundation
+import Subprocess
 
 public struct GitError: Error, CustomStringConvertible, Sendable {
     public let description: String
@@ -25,17 +26,41 @@ public enum Git {
         _ repo: String, _ args: [String], input: Data? = nil, env: [String: String]? = nil
     ) throws -> Data {
         let started = DispatchTime.now()
-        let result: Subprocess.Result
+        let arguments = ["--no-optional-locks", "-C", repo] + args
+        var overrides: [Environment.Key: String?] = [:]
+        for (key, value) in env ?? [:] {
+            if let key = Environment.Key(rawValue: key) {
+                overrides[key] = value
+            }
+        }
+        let environment = Environment.inherit.updating(overrides)
+        let input = input ?? Data()
+        let result: Output
         do {
-            result = try Subprocess.run(
-                executable: "git",
-                arguments: ["--no-optional-locks", "-C", repo] + args,
-                input: input,
-                extraEnvironment: env
-            )
+            result = try blocking {
+                let execution = try await Subprocess.run(
+                    .name("git"),
+                    arguments: Arguments(arguments),
+                    environment: environment,
+                    input: .data(input),
+                    output: .data(limit: .max),
+                    error: .data(limit: .max)
+                )
+                let status: Int32
+                switch execution.terminationStatus {
+                case .exited(let code):
+                    status = code
+                case .signaled(let signal):
+                    status = 128 + signal
+                }
+                return Output(
+                    status: status, stdout: execution.standardOutput,
+                    stderr: execution.standardError
+                )
+            }
         } catch {
             Logger.error("git \(args.joined(separator: " ")): \(error)")
-            throw error
+            throw ServerError("cannot run git: \(error)")
         }
         let elapsed =
             (DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds)
@@ -54,6 +79,32 @@ public enum Git {
             throw GitError(stderr.isEmpty ? "git \(args.first ?? "") failed" : stderr)
         }
         return result.stdout
+    }
+
+    private struct Output: Sendable {
+        let status: Int32
+        let stdout: Data
+        let stderr: Data
+    }
+
+    /// Waits for swift-subprocess's async API from synchronous code. Only
+    /// safe off Swift's cooperative thread pool (the server's request
+    /// thread is), and goes away once request handling is async.
+    private static func blocking<T: Sendable>(
+        _ body: @escaping @Sendable () async throws -> T
+    ) throws -> T {
+        let box = BlockingResult<T>()
+        let done = DispatchSemaphore(value: 0)
+        Task.detached {
+            do {
+                box.value = .success(try await body())
+            } catch {
+                box.value = .failure(error)
+            }
+            done.signal()
+        }
+        done.wait()
+        return try box.value!.get()
     }
 
     public static func runText(
@@ -82,60 +133,8 @@ public enum Git {
     }
 }
 
-// MARK: - Subprocess
-
-enum Subprocess {
-    struct Result {
-        let status: Int32
-        let stdout: Data
-        let stderr: Data
-    }
-
-    static func run(
-        executable: String, arguments: [String], input: Data? = nil,
-        extraEnvironment: [String: String]? = nil
-    ) throws -> Result {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = [executable] + arguments
-        if let extraEnvironment {
-            var env = ProcessInfo.processInfo.environment
-            for (k, v) in extraEnvironment { env[k] = v }
-            process.environment = env
-        }
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        let stdinPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-        process.standardInput = stdinPipe
-        do {
-            try process.run()
-        } catch {
-            throw ServerError("cannot run \(executable): \(error)")
-        }
-        // Drain stdout on its own thread so a chatty process can't deadlock
-        // against a full stderr pipe (or vice versa). Only the descriptor
-        // crosses into the thread; Pipe itself is not Sendable.
-        let stdoutBox = DataBox()
-        let stdoutFd = stdoutPipe.fileHandleForReading.fileDescriptor
-        let reader = Thread {
-            stdoutBox.data = FileHandle(fileDescriptor: stdoutFd, closeOnDealloc: false).readDataToEndOfFile()
-            stdoutBox.done.signal()
-        }
-        reader.start()
-        if let input, !input.isEmpty {
-            stdinPipe.fileHandleForWriting.write(input)
-        }
-        try? stdinPipe.fileHandleForWriting.close()
-        let stderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        stdoutBox.done.wait()
-        process.waitUntilExit()
-        return Result(status: process.terminationStatus, stdout: stdoutBox.data, stderr: stderr)
-    }
-
-    private final class DataBox: @unchecked Sendable {
-        var data = Data()
-        let done = DispatchSemaphore(value: 0)
-    }
+/// Hands a result from the task in `Git.blocking` to the waiting thread; the
+/// semaphore orders the write before the read.
+private final class BlockingResult<T>: @unchecked Sendable {
+    var value: Result<T, any Error>?
 }

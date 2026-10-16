@@ -1,4 +1,5 @@
 import Foundation
+import Subprocess
 
 /// Command-line options, as the CLI target parses them.
 public struct Options: Sendable {
@@ -90,11 +91,12 @@ public enum App {
         #else
         let opener = ["xdg-open", url]
         #endif
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = opener
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try? process.run()
+        Task {
+            _ = try? await Subprocess.run(
+                .name(opener[0]),
+                arguments: Arguments(Array(opener.dropFirst())),
+                output: .discarded
+            )
+        }
     }
 }
