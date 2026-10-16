@@ -158,6 +158,10 @@ struct ReleaseCommand: AsyncParsableCommand {
             "ditto",
             "-c",
             "-k",
+            // Leave out extended attributes, which ditto otherwise stores as
+            // a ._gandalf file that unzip extracts. The signature is in the
+            // binary itself.
+            "--norsrc",
             signedBinary.path,
             zip.path,
         ])
