@@ -38,7 +38,6 @@ import FoundationNetworking
         try repo.write("a.txt", "a\n")
         _ = try repo.commit("one")
         try repo.write("a.txt", "b\n")
-        try repo.write("public/index.html", "<p>ui</p>")
         let router = Router(repo.config())
         let first = try #require(Server.bindingNextFree(router: router, from: 14633))
         defer { first.shutdown() }
@@ -53,8 +52,8 @@ import FoundationNetworking
         #expect(status == 200)
         #expect(headers["content-type"] == "text/html; charset=utf-8")
         #expect(headers["cache-control"] == "no-store")
-        #expect(headers["content-length"] == "9")
-        #expect(String(decoding: body, as: UTF8.self) == "<p>ui</p>")
+        #expect(headers["content-length"] == String(uiFiles["index.html"]!.count))
+        #expect(body == uiFiles["index.html"])
 
         let (rs, rh, rb) = try fetch("http://127.0.0.1:\(first.port)/api/review?ws=1")
         #expect(rs == 200 && rh["content-type"] == "application/json; charset=utf-8")
@@ -78,7 +77,6 @@ import FoundationNetworking
         let repo = try FixtureRepo()
         try repo.write("a.txt", "a\n")
         _ = try repo.commit("one")
-        try repo.write("public/index.html", "ui")
         let server = try #require(Server.bindingNextFree(router: Router(repo.config()), from: 14700))
         defer { server.shutdown() }
         let group = DispatchGroup()

@@ -4,22 +4,28 @@
 
 A local-only "code review" tool designed for working alongside an AI agent.
 
-Review and comment on uncommitted changes in a browser-based UI powered by a local Swift server. Submitting a review provides you with a self-describing markdown summary of your comments, ready for copy-paste.
+Review and comment on uncommitted changes in a browser-based UI powered by a local Swift server.
 
 `gandalf` makes no network requests, and depends only on `git`, a browser, and Swift packages shipped by Apple. It persists review state in `.gandalf`.
 
-## Building and installing
+## Installing
 
-The server is a Swift package in `GandalfServer/`. To install, build it: 
+`gandalf` is a Swift CLI that runs a local HTTP server serving embedded HTML/CSS/JS.
+
+To install, download `gandalf-<version>-macos-arm64.zip` from [Releases](https://github.com/sashaweiss/gandalf/releases), unzip it, and add `gandalf` to your `PATH`.
+
+### Building from source
+
+Alternatively, build `gandalf` from source. From the repo root:
 
 ```sh
 swift build -c release --package-path GandalfServer
+./gandalf # symlink to the built product
 ```
 
-Then, add this repo to your `PATH`. (See: `./gandalf`.)
+### Releases
 
-> [!NOTE]
-> `gandalf` serves the UI from `./public/`, which may complicate installing it somewhere other than the repo root.
+For releasing, see `GandalfRelease/`.
 
 ## Quickstart
 
@@ -30,36 +36,14 @@ cd /path/to/repo-under-review
 gandalf
 ```
 
-Options:
+See `gandalf --help` for full usage.
 
-- `--repo PATH`: repository to review (default: the git repo containing the cwd)
-- `--base REF`: what to diff the working tree against by default (its
-  merge-base with `HEAD`, so a branch name shows what this branch changed).
-  Default: `HEAD`.
-- `--state-dir DIR`: where review state lives. Default: `<repo>/.gandalf`.
-- `--port N`: default `4633`, or the next free port after it — so parallel
-  sessions just work. An explicit `--port` fails rather than moving the URL.
-- `--no-open`: don't open the browser on startup.
+### Reviewing
 
-## Reviewing
+Review should be familiar if you've used browser-based code-review tools before. Submitting a review provides you with self-describing, copy-paste ready feedback in Markdown.
 
-Review should be familiar if you've used browser-based code-review tools before.
-Diffs show **inline** or **split** (side-by-side) — toggle in the topbar; the
-choice sticks on this machine. The left sidebar is a **file tree** of the diff:
-fold folders, filter by path (`/` focuses the box), and click a file to jump to
-it. Submitting a review provides you with copyable feedback, addressed and self-explanatory, for you to paste to your agent.
-
-The **view picker** in the topbar chooses what you're reviewing: uncommitted
-changes, all changes since your branch left main, everything since a past
-review, or a single commit on its own. Comments left on a single commit stay pinned to
-that commit, and the feedback tells the agent which commit they're about.
-
-Submitting a review "checkpoints" changes, such that your next review will show the diff *since the last review*, regardless of git commits or rebases.
-
-If git surgery makes those checkpoints unhelpful, **Wipe review history** in
-the gear menu deletes past reviews and their snapshots — in-progress drafts
-are kept.
+Submitting a review "checkpoints" changes, such that you can subsequently re-review only the diff since your last submitted review.
 
 ## Resources
 
-Detailed behavior, design decisions, and invariants live in [docs/](docs/).
+See also: [docs/](docs/).

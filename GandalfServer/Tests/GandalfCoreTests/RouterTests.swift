@@ -60,7 +60,7 @@ import Testing
         try repo.write("docs/gone.txt", "gone\n")
         try repo.write("docs/old.txt", "1\n2\n3\n4\n5\n")
         try repo.write("img.bin", "\u{0}bin")
-        try repo.write(".gitignore", ".gandalf/\npublic/\n")
+        try repo.write(".gitignore", ".gandalf/\n")
         _ = try repo.commit("Initial")
         try repo.write("src/main.swift", Self.stagedEdit)
         try repo.git(["add", "src/main.swift"])
@@ -69,9 +69,6 @@ import Testing
         try repo.git(["mv", "docs/old.txt", "docs/new.txt"])
         try repo.write("img.bin", "\u{0}bin2")
         try repo.write("untracked.txt", "u1\nu2\n")
-        try repo.write("public/index.html", "<html></html>")
-        try repo.write("public/app.js", "// js")
-        try repo.write("public/secret.txt", "no")
         return (repo, Router(repo.config()))
     }
 
@@ -86,31 +83,36 @@ import Testing
         #expect(router.handle(Request(method: "PUT", uri: "/api/status", headers: ["host": "localhost"])).status == 501)
     }
 
-    @Test func servesStaticWhitelistOnly() throws {
+    @Test func servesTheEmbeddedUI() throws {
         let (repo, router) = try makeRepo()
         defer { withExtendedLifetime(repo) {} }
         let index = router.get("/")
-        #expect(index.status == 200 && index.contentType == "text/html; charset=utf-8" && index.text == "<html></html>")
+        #expect(index.status == 200 && index.contentType == "text/html; charset=utf-8")
+        #expect(index.body == uiFiles["index.html"])
         #expect(router.get("/app.js").contentType == "text/javascript; charset=utf-8")
-        #expect(router.get("/style.css").status == 404)  // not present in this fixture
         #expect(router.get("/secret.txt").status == 404)
+        #expect(router.get("/public/index.html").status == 404)
         #expect(router.get("/nope").text == #"{"error":"not found"}"#)
         #expect(router.get("/api/nope").status == 404)
     }
 
-    @Test func servesStaticThroughASymlinkedDirectory() throws {
-        let repo = try FixtureRepo()
-        try repo.write("a.txt", "a\n")
-        _ = try repo.commit("one")
-        let tmp = try TempDir()
-        try tmp.write("real/public/index.html", "<p>linked</p>")
-        try FileManager.default.createSymbolicLink(
-            atPath: Paths.join(tmp.path, "link"), withDestinationPath: "real"
-        )
-        let router = Router(repo.config(publicDir: Paths.join(tmp.path, "link/public")))
-        let index = router.get("/")
-        #expect(index.status == 200 && index.text == "<p>linked</p>")
-        #expect(router.get("/style.css").status == 404)
+    /// Every file in the repo's `public/` is compiled in and served as is.
+    @Test func embedsAllOfPublic() throws {
+        let publicDir = URL(filePath: #filePath)
+            .deletingLastPathComponent()
+            .appending(path: "../../../public")
+            .standardized.path
+        let names = try FileManager.default.contentsOfDirectory(atPath: publicDir)
+            .filter { !$0.hasPrefix(".") }  // e.g. .DS_Store
+        #expect(Set(names) == Set(uiFiles.keys))
+        let (repo, router) = try makeRepo()
+        defer { withExtendedLifetime(repo) {} }
+        for name in names {
+            let served = router.get("/" + name)
+            #expect(served.status == 200, "\(name)")
+            #expect(served.contentType != "application/octet-stream", "\(name)")
+            #expect(served.body == FileManager.default.contents(atPath: Paths.join(publicDir, name)), "\(name)")
+        }
     }
 
     @Test func reviewPayloadShape() throws {
@@ -358,7 +360,7 @@ import Testing
         try repo.write("a.txt", "a\n")
         _ = try repo.commit("one")
         let stateRoot = Paths.join(Paths.resolve(repo.path), "custom/state")
-        let cfg = ReviewConfig(repo: Paths.resolve(repo.path), base: "HEAD", stateRoot: stateRoot, publicDir: repo.path)
+        let cfg = ReviewConfig(repo: Paths.resolve(repo.path), base: "HEAD", stateRoot: stateRoot)
         #expect(cfg.excludes == [":(exclude).gandalf", ":(exclude)custom/state"])
         #expect(cfg.skipPrefixes == ["custom/state"])
         #expect(cfg.statePaths == [".gandalf", "custom/state"])
@@ -366,7 +368,7 @@ import Testing
         _ = router.post("/api/drafts", .object(["drafts": .array([])]))
         #expect(Paths.exists(Paths.join(stateRoot, "branches/main/state.json")))
         #expect(router.get("/api/review").json["files"] == .array([]))
-        let outside = ReviewConfig(repo: Paths.resolve(repo.path), base: "HEAD", stateRoot: "/tmp/elsewhere", publicDir: repo.path)
+        let outside = ReviewConfig(repo: Paths.resolve(repo.path), base: "HEAD", stateRoot: "/tmp/elsewhere")
         #expect(outside.excludes == [":(exclude).gandalf"] && outside.skipPrefixes.isEmpty)
     }
 }
@@ -379,13 +381,13 @@ import Testing
         var options = Options()
         options.repo = repo.path
         options.base = "main"
-        let cfg = try App.configure(options, publicDir: "/tmp/public")
+        let cfg = try App.configure(options)
         #expect(cfg.repo == Paths.resolve(repo.path))
         #expect(cfg.base == "main")
         #expect(cfg.stateRoot == Paths.join(Paths.resolve(repo.path), ".gandalf"))
         options.stateDir = Paths.join(repo.path, "custom")
-        #expect(try App.configure(options, publicDir: "/tmp/public").skipPrefixes == ["custom"])
+        #expect(try App.configure(options).skipPrefixes == ["custom"])
         options.repo = Paths.join(repo.path, "nope")
-        #expect(throws: ExitError.self) { try App.configure(options, publicDir: "/tmp/public") }
+        #expect(throws: ExitError.self) { try App.configure(options) }
     }
 }

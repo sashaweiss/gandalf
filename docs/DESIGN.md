@@ -1,464 +1,139 @@
-# gandalf — design & behavior reference
+# gandalf — design notes
 
-This is the maintainer/agent-facing companion to the README (which is the
-short human intro). It records what the tool does in detail, the invariants
-that must not regress, and why the design is the way it is. If you are an
-agent resuming work on this repo: read this before changing `GandalfServer/`
-or `public/`.
+For maintainers and agents. The README is the user-facing intro; this covers
+the layout, the invariants, and the decisions that aren't obvious from the
+code.
 
-## What it is
+## Layout
 
-A local, zero-dependency "PR review" UI for an agent's changes: its
-**uncommitted working-tree changes** by default, and also the branch's
-commits, one at a time or as a range. The reviewer comments in a browser;
-finishing a review renders the comments as **self-describing markdown** to
-paste to an agent (also written to `.gandalf/pending-review.md`), snapshots
-the review locally as an audit trail, and checkpoints the working tree so the
-next review can show only what changed since.
+- `GandalfServer/` — Swift package. `GandalfCore` is the library;
+  `gandalf` is the CLI (argument parsing, then `App.run`). Version lives in
+  `Sources/gandalf/Version.swift`.
+  - `Server.swift` (SwiftNIO, loopback only, requests on a thread pool since
+    git blocks), `Router.swift` (routes + API), `Review.swift` (diffs,
+    snapshots, commit list), `Diff.swift` (unified-diff parser),
+    `Drafts.swift` (re-anchoring, hunk patches), `State.swift`,
+    `Markdown.swift` (agent handoff), `JSON.swift`, and git/path/text helpers.
+- `public/` — the UI: plain HTML/CSS/JS, compiled into the binary via
+  `.embedInCode` (through the `Sources/GandalfCore/public` symlink). A new
+  file needs an entry in `uiFiles` in `Router.swift`; a test enforces it.
+  UI changes need a rebuild.
+- `tests/` — node tests for the pure parts of `app.js` (row building, split
+  pairing, selection anchoring, file tree) and `highlight.js`.
+- `GandalfRelease/` — `gandalf-release`, which tests, builds, signs,
+  notarizes, tags `v<version>`, and drafts a GitHub release. macOS only.
+- `gandalf` — symlink to the release build, for running from a checkout.
 
-## Hard invariants (do not regress; ask before relaxing)
+## Checks
 
-- **Apple-only dependencies.** The server is a Swift package
-  (`GandalfServer/`) whose only dependencies are packages Apple publishes:
-  SwiftNIO, Swift Argument Parser and Swift Crypto. The UI is plain
-  HTML/CSS/JS in `public/`. No other packages, no npm, CDN, or web fonts. It
-  must keep building on both macOS and Linux.
-- **Deterministic JSON.** API payloads and state files go through the one
-  `JSON` value type (`JSON.swift`), which serializes object keys sorted, so
-  state files diff cleanly and tests can compare output as values.
-- **No network.** The server binds `127.0.0.1` only. The page carries a strict
-  CSP (`default-src 'none'; …` in `public/index.html`) that forbids any
-  non-local request — keep it intact. Requests are guarded against DNS
-  rebinding (Host header check) and cross-site requests (Origin check).
-- **Read-only `.git` must work.** Every git call goes through `Git.run`
-  with `--no-optional-locks`. Staging is the *only* write path into `.git`
-  and must fail gracefully (error toast, everything else keeps working).
-  Snapshot trees are written to gandalf's own object store, never `.git`.
-- **Never auto-refresh.** On working-tree drift, show the sticky "diff is out
-  of date" banner with a Refresh button. Never yank the view.
-- **Predictable draft anchoring** (rule below). No fuzzy matching without
-  asking the user.
-- **State lives at `<repo root>/.gandalf/`** regardless of launch directory
-  (`--state-dir` overrides). Local-only, never committed; `.gandalf` is
-  excluded from the review diff.
-- Comments form **single-level threads**: replies attach to a thread root,
-  never to another reply. Overlapping/duplicate ranges are allowed.
-- The user runs the tool on macOS and reviews in **Firefox**; keep changes
-  Firefox-compatible (e.g. the `ClipboardItem`-promise copy pattern).
+```sh
+(cd GandalfServer && swift build -c release && swift test)
+node --check public/app.js
+node tests/test_buildrows.js
+node tests/test_highlight.js
+node tests/test_filetree.js
+```
 
-## Architecture
+For end-to-end checks, script a throwaway fixture repo and run the real server
+on a spare port with `--no-open`. Visual changes can be checked with headless
+Firefox via `geckodriver`.
 
-- `gandalf` — a symlink to the release binary,
-  `GandalfServer/.build/release/gandalf` (`swift build -c release`). The
-  binary locates `public/` by resolving its own path and walking up to the
-  checkout, so further symlinks (e.g. from `~/.local/bin`) are fine.
-- `GandalfServer/Sources/gandalf` — the CLI: argument parsing only, then
-  `App.run`.
-- `GandalfServer/Sources/GandalfCore` — the library. `Server.swift` is the
-  SwiftNIO HTTP/1.1 front (loopback only; each request runs on a thread pool
-  because git blocks); `Router.swift` is the request handling and the API
-  routes; `Review.swift` diff collection, snapshots and commit listing;
-  `Diff.swift` the unified-diff parser and file model; `Drafts.swift` draft
-  re-anchoring and hunk patches; `State.swift` the branch-scoped state
-  files; `Markdown.swift` the agent handoff; `JSON.swift` the ordered JSON
-  value; `Git.swift`/`Paths.swift`/`Text.swift` the git, filesystem and
-  line-splitting helpers.
-- `public/app.js` — all UI logic. The unit-tested core: `buildRows` (hunks +
-  expanded context → display rows), `pairRows` (display rows → side-by-side
-  rows), `selectionRows`/`selectionAnchor` (a drag → the comment anchor), and
-  `buildTree`/`treeRows`/`markName` (file paths → sidebar rows).
-- `public/highlight.js` — spec-driven, dependency-free syntax tokenizer.
-- `tests/test_buildrows.js`, `tests/test_highlight.js`,
-  `tests/test_filetree.js` — run with `node tests/<file>.js`; they stub the
-  DOM and evaluate `app.js` in a vm.
+## Invariants
 
-### HTTP API
+Ask before relaxing any of these.
 
-| Route | Method | Purpose |
-| --- | --- | --- |
-| `/api/review[?since=N\|commit=SHA\|all=1][&ws=1]` | GET | Review payload for a view (see Views); `ws=1` = ignore whitespace |
-| `/api/status[?ws=1]` | GET | `{fingerprint, head}` for staleness polling (every 4 s, page-visible only); pass the same `ws` the review used |
-| `/api/file?path=[&rev=SHA]` | GET | File lines in the working tree or at a commit (context expansion) |
-| `/api/revision?n=` / `/api/revision-md?n=` | GET | Audit-trail snapshot / its markdown |
-| `/api/drafts` | POST | Replace the draft set (autosave, debounced 400 ms) |
-| `/api/viewed` | POST | `{path, sig, viewed}` — persist a Viewed mark |
-| `/api/submit` | POST | `{comments, ignoreWs, view}` — finish review: snapshot, markdown, clear drafts |
-| `/api/reset-history` | POST | `{scope: "branch"\|"all"}` — delete submitted reviews + snapshots, keep drafts |
-| `/api/stage` | POST | Stage/unstage file or hunk (needs writable `.git`) |
+- **Apple-only dependencies** for the server (SwiftNIO, Argument Parser,
+  Crypto); no npm, CDN, or web fonts. Builds on macOS and Linux.
+- **No network.** Binds `127.0.0.1`; strict CSP in `index.html` (so no
+  inline styles); Host and Origin checks against DNS rebinding and
+  cross-site requests.
+- **Read-only `.git` works.** Git calls use `--no-optional-locks`. Staging is
+  the only write into `.git` and fails gracefully. Snapshots go to gandalf's
+  own object store.
+- **Never auto-refresh.** Drift shows a "diff is out of date" banner; the
+  view never moves on its own.
+- **Predictable comment anchoring** (below); no fuzzy matching.
+- **Single-level threads.** Replies attach to a root, never to a reply.
+- **Deterministic JSON.** Everything goes through `JSON`, which sorts keys.
+- **State at `<repo root>/.gandalf/`** (`--state-dir` overrides), excluded
+  from the diff.
+- **Firefox on macOS** is the target browser.
 
-## Diff scope & rendering
-
-- The default diff is `working tree vs --base` (default `HEAD`), staged and
-  unstaged alike, plus untracked files (synthesized as all-added).
-  `.gandalf/` is excluded. The other views are under "Views" below.
-- Files > 5 MB (`maxFileBytes`) and binary files are listed but not
-  rendered.
-- **Ignore whitespace** (checkbox in the Settings gear panel; per-machine
-  localStorage):
-  the server diffs with `-w` in both views, so whitespace-only files
-  disappear entirely (git emits nothing for them) and whitespace-only lines
-  render as context. While on: hunk staging is disabled (a hunk parsed from
-  a `-w` diff is not a valid patch for `git apply --cached`; file-level
-  staging keeps working), the topbar shows "ignoring whitespace", and the
-  staleness fingerprint is view-scoped — a whitespace-only edit doesn't trip
-  the banner because the rendered view wouldn't change. Submitting freezes
-  the audit diff as the reviewer saw it; the snapshot tree is always the
-  real working tree.
-- **Inline vs split** (the `Inline | Split` segmented control in the topbar;
-  per-machine localStorage, like the code font): inline is the unified
-  single-column table. Split puts the old side left and the new side right in
-  one 8-column table — `pairRows` zips the flat display rows into pairs
-  (deletions left, additions right, context spanning both as `left === right`,
-  a longer side's leftovers against a blank cell). One table rather than two
-  keeps both sides of a wrapped line on the same row. The split table declares
-  a `<colgroup>` and uses `table-layout: fixed`, so the two sides stay exactly
-  equal and content can never widen a column — without it the code cells
-  over-constrain the table, Firefox widens it past the wrapper, and the right
-  column gets clipped. A comment (and the open form) sits under the column it
-  annotates rather than spanning the row, so which side it is about is
-  unmistakable. It is purely a rendering
-  choice — no refetch, no API or comment-model change — so flipping views keeps
-  expanded context, open forms, viewed marks and staleness state exactly as
-  they were, and it applies to audit-trail diffs too. Two code columns need
-  `MIN_SPLIT_PX` (1000 px) of room *for the diff* — so `MIN_SPLIT_PX +
-  TREE_PX` of window while the file tree is up — and below that split renders
-  inline until there is room (GitHub does the same); the toggle keeps showing
-  the choice, dimmed and italic, and its tooltip (and the toast) says whether
-  the window or the sidebar is the reason. Crossing a threshold re-renders the
-  working diff in place — no fetch, nothing lost — while audit-trail diffs
-  already on screen keep their shape until reopened. The control sits in the topbar rather
-  than the gear menu because view mode gets flipped far more often than a font.
-- Hidden unchanged regions render as gap bars with **↓ 20 / ↑ 20 / Show all**
-  expansion controls; expansion fetches working-tree content lazily via
-  `/api/file`.
-- Syntax highlighting: `EXT_LANG`/`LANG_SPECS` in `highlight.js` (currently
-  Swift). A new language = keyword set + syntax flags + extension mapping.
-  Line-by-line tokenizing with carry state; old and new diff sides carry
-  separately; carries reset at unexpanded gaps. Known limit: a hunk that
-  *starts* inside a block comment or multiline string renders plain until the
-  construct closes — cheap and predictable beats fetching whole files.
-- Page width is two knobs: `--page-max` (1800 px) and `--page-pad` (24 px of
-  side inset), both shared by the topbar and `main` so the two stay aligned.
-  Split view wants every pixel, and the old 1200 px cap left wide windows
-  mostly empty.
-- Tab title is `gandalf: <branch>:<repo>`. The **gear (Settings) menu** in
-  the topbar sets a per-machine monospace font (localStorage, prepended to
-  the `--mono` stack so missing fonts fall through — never hardcode a
-  personal font in the repo) and holds the ignore-whitespace toggle. The
-  gear is an inline SVG (stroke `currentColor`), keeping the no-external-
-  assets rule.
-- Every **disclosure control** — file cards, tree folders, audit-trail
-  revisions — draws the same inline chevron (`caretSvg`, stroke
-  `currentColor`) and points it by rotating it in CSS off the container's
-  state (`section.file.collapsed`, `.trow.dir.folded`,
-  `details.revision:not([open])`). Folding is therefore always a class
-  toggle, never swapped markup, and there is one glyph to restyle.
-
-## File tree (left sidebar)
-
-A GitHub-style navigator for the files in the current view. It only
-navigates: clicking a row scrolls to that file's card and changes nothing
-else — not fold state, not Viewed, not a comment. It lists exactly the files
-the page is showing, so it follows the current view, and audit-trail
-revisions (read-only history) never appear in it.
-
-- **Folders fold** (per-folder carets, plus one ⊟/⊞ control for the whole
-  tree, labelled for whichever direction it will go). A folder holding a
-  single sub-folder and nothing else is merged into it, so `docs/design` is
-  one row; the merged row is keyed by its deepest path, so folding it hides
-  exactly what it shows. Folders and files interleave in `review.files`
-  order, a folder sorting by its first file, so the tree reads top-to-bottom
-  in the same order as the cards below (git's plain path sort).
-- **Filter box**: whitespace-separated substrings, *all* of which must appear
-  in the path (a rename's old path counts too), case-insensitive. Not fuzzy,
-  deliberately — what the filter shows is always explainable from what was
-  typed. Hits are marked in the file name. While filtering, every match shows
-  expanded and the folder carets go inert (a search that hid its own hits
-  behind a folded folder would be a lie); fold state is kept and resumes when
-  the box is cleared. `/` focuses the box (never while typing a comment),
-  `enter` jumps to the first match, `esc` clears it and then blurs. It filters
-  the tree only — the diff below always shows every file.
-- Each row carries the file's status letter (A/M/D/R, `B` for binary), its
-  draft-comment count and its Viewed tick, so review progress reads at a
-  glance. The row for the file being read is highlighted: the first card whose
-  bottom clears the sticky header, recomputed once per scroll frame (and the
-  last card once the page bottoms out).
-- The sidebar is **per-machine, like the code font** (topbar toggle,
-  localStorage) and hides itself below `MIN_TREE_PX` (900 px), where there is
-  no room for it. `TREE_PX`/`MIN_TREE_PX` in `app.js` mirror `--tree-w` and
-  the media query in `style.css` — keep them in sync.
-- It takes width from the diff, which is why it participates in the
-  split-view threshold above; hiding it can turn split back on.
-- Indentation is drawn with guide spans rather than a `padding` style
-  attribute: the CSP forbids inline styles, and the guides are the tree lines.
-
-## Fold vs. Viewed (GitHub-style, deliberate split)
-
-- The **caret** purely folds a file card; expanded context and any open form
-  survive and return on unfold. Collapse/Expand-all do the same.
-- The **Viewed** checkbox is review progress: it collapses the file and
-  *resets* its expanded context. Viewed persists per branch, keyed to a
-  per-file content signature (status + paths + hunk contents; binary files
-  fall back to size+mtime), so it clears itself the moment that file's diff
-  changes. Only Viewed resets expansion — folding never does.
-
-## Comments
-
-- Hover **+** on a line, or drag across lines, to comment on a line/block.
-  `⌘⏎` saves, `esc` cancels. Drafts autosave (debounced POST) and survive
-  reloads.
-- **Half-written comments are never lost implicitly** (`stashForm`): when an
-  open form would be replaced — opening another comment, clicking Edit
-  elsewhere, marking the file Viewed, a Refresh or view switch, leaving the
-  page (`pagehide`), or opening the Finish dialog — non-empty text is stashed as a draft marked `wip`
-  (dashed box, "unfinished — Edit to continue"; while editing an existing
-  comment, its text is updated and flagged instead). Edit resumes; a real
-  save clears the flag. Explicit `esc`/Cancel still discards. The Finish
-  dialog warns "N unfinished drafts will be included as-is"; the markdown
-  treats them as normal comments.
-- Overlapping and duplicate ranges are allowed. When several comments end on
-  the same line, the widest range renders first, then oldest.
-- **In split view a drag stays in the column it started in** (`selectionRows`);
-  blank cells carry no display index, so they are skipped rather than crossed.
-  The anchor side is then decided the same way in both views
-  (`selectionAnchor`): anything with a working-tree line number anchors on the
-  new side, and only an all-deletions selection anchors on the old side. That
-  is deliberate — `Drafts.reanchor` keeps an old-side draft attached only while
-  its whole range is deleted lines, so an old-side anchor spanning context
-  would detach on the next load. A left-column sweep that mixes deletions and
-  context therefore anchors on its context lines, with the deletions still
-  quoted in the excerpt (the same rule the unified view has always used).
-- **Threads** (single-level, since 2026-08-01 — supersedes the original
-  "flat comments" rule): every line/file comment has a **Reply** footer;
-  replies are drafts with `parentId` pointing at the thread root, carry no
-  anchor of their own (they follow the root everywhere — anchor moves,
-  detachment, orphan bucket, other views), and stack under the root in one
-  outlined container, oldest first. Deleting the root deletes its replies;
-  deleting a reply removes just that reply. In the markdown, replies render
-  as additional paragraphs of the root's entry — same line block, createdAt
-  order. Review-level (overall) comments have no replies.
-- **File-level comments**: the **Comment** button in a file header. Rendered
-  in a strip above the diff; works for binary files. `fileLevel: true`,
-  no line anchoring ever.
-- **Review-level (overall) comment**: written in the **Finish review dialog**
-  (GitHub-summary style). Stored as a draft (`reviewLevel: true, file: null`)
-  and upserted on every way out of the dialog (confirm/cancel/esc), so the
-  text survives reloads and failed submits. Leads the markdown as an
-  `## Overall` section. A review may consist of only an overall comment —
-  the Finish button is never disabled.
-- **A review with no comments at all is an approval**: confirming an empty
-  Finish dialog checkpoints the review ("all these changes are good for
-  now"). It gets a revision + snapshot like any review (so the baseline
-  advances), the audit trail shows "approved — no comments", and the
-  markdown/`pending-review.md` says plainly that the changes were approved
-  and no action is needed.
-
-### Draft anchoring (the predictable rule)
-
-A draft follows the **exact lines it quotes**. On every load, "new"-side
-drafts are re-located by searching the working-tree file for their quoted
-lines verbatim; the occurrence closest to the previous anchor wins ("followed
-code from line N"). If the quoted lines no longer exist verbatim, the draft
-**detaches**: flagged, shows its saved excerpt, sits at the bottom of its
-file card. "Old"-side drafts (on deleted lines) never move and detach only if
-the deletion leaves the diff. New-side anchoring searches the working tree
-regardless of whether the file is in the current view, so switching views
-can't falsely detach a draft.
-
-## Views: what is being reviewed
-
-The topbar **view picker** chooses what the page diffs. There are four kinds,
-deliberately few, and every one runs through the same parsing/rendering
-pipeline:
+## Views
 
 | View | Old side → new side | Query |
 | --- | --- | --- |
-| Default ("Uncommitted changes") | `--base` → working tree | none |
-| Since review rN | review rN's snapshot → working tree | `since=N` |
-| One commit | its first parent → the commit | `commit=SHA` |
-| All changes since main | the branch point → working tree | `all=1` |
+| Uncommitted changes (default) | `--base` → working tree | — |
+| Since review rN | rN's snapshot → working tree | `since=N` |
+| One commit | first parent → commit | `commit=SHA` |
+| All changes since main | branch point → working tree | `all=1` |
 
-- `--base` is resolved to its **merge-base with HEAD**, so `--base main`
-  reviews what this branch changed (GitHub's `main...HEAD`), not a revert of
-  whatever landed on main since. For the default `HEAD` that is a no-op.
-- The commit list is just **what is on this branch**: HEAD's first-parent
-  history back to, not including, the **branch point** (the merge-base with
-  `origin/HEAD`, `main` or `master`), newest first, capped at 100. On the
-  default branch itself that is empty; with no default branch at all it falls
-  back to the most recent commits. "All changes since main" (named for
-  whichever default branch was found) is offered only off the default branch,
-  and only when it differs from the default view. A commit that is not an
-  ancestor of the last review's HEAD is marked **new since rN**; commits that
-  carry comments show a count.
-- The choice persists per tab (sessionStorage). A view that stopped existing
-  (wiped snapshot, rewritten commit) falls back to the default with a toast.
-- In every view but "one commit", the new side is the working tree — which is
-  why draft anchoring, context expansion and "Line N = working tree now" work
-  unchanged. A commit view's new side is the commit: context expansion reads
-  it (`/api/file?rev=`), and nothing there goes stale, so it isn't polled.
-- **Staging only exists where the diff is relative to HEAD**: the server only
-  reports staged state (`stagedState`) for a base view whose base is HEAD, and
-  no staged state means no staging buttons.
-- Viewed marks are keyed per path in the working-tree views (one map, shared,
-  so any change to a file invalidates its mark in all of them) and per
-  commit + path in a commit view (`file.viewedKey`).
+- `--base` resolves to its merge-base with HEAD, so `--base main` shows what
+  the branch changed.
+- The commit list is HEAD's first-parent history back to the branch point
+  (merge-base with `origin/HEAD`, `main`, or `master`), capped at 100.
+- Staging is offered only when the old side is HEAD, and hunk staging not
+  while ignoring whitespace (a `-w` hunk isn't a valid patch).
 
-### Review snapshots (git trees)
+## Snapshots
 
-Nothing need be committed between review rounds, so a review can't just
-record a commit. Instead **finishing a review snapshots the whole working
-tree as a git tree object** and records `{tree, head, headSha}` in the
-revision index. "Since review rN" is then a plain `git diff <tree rN> <tree
-now>`, so it is unaffected by commits, rebases or a moving base, and renames
-come for free.
+Nothing need be committed between reviews, so finishing a review snapshots
+the working tree as a git tree (temporary index, `GIT_OBJECT_DIRECTORY` set to
+`.gandalf/objects` with `.git` as an alternate). "Since rN" is then a plain
+tree diff, unaffected by commits or rebases. A `git gc` can prune blobs an old
+snapshot relied on; that surfaces as the stale-view fallback.
 
-- The tree is built with a temporary index (a copy of the repo's, so `add`
-  can trust its stat cache) and `GIT_OBJECT_DIRECTORY=<state>/objects` with
-  the repo's objects as an alternate. Only uncommitted content is written, and
-  only there: **`.git` is never written to**, so read-only mounts work. The
-  "now" side of the since view is snapshotted the same way on every load.
-- Trade-off: a snapshot's blobs that were already in `.git` aren't copied, so
-  a `git gc` that prunes objects only rebased-away commits used can break an
-  old snapshot. That surfaces as the stale-view fallback.
-- Revisions without a `tree` (the pre-2026-09 JSON snapshots) stay in the
-  audit trail but can't be diffed against.
-- Finishing a review **switches the view to "since" the new revision**, so
-  the page reads "No changes since review rN" until the agent resumes.
+**Wipe review history** deletes revisions and snapshots but keeps drafts and
+Viewed marks. It's the only destructive action, so it sits behind the gear
+menu and a confirmation.
 
-### Comments across views
+## Comments
 
-- **Old-side comments are per-view**: a comment on deleted lines records
-  which old side it was made against — `base` (the base commit: `--base` or
-  the branch point), `baseline`
-  (a review number) or `commit` — and only anchors in a view with the same old
-  side (`oldSideKey`); elsewhere it renders in the "not
-  attached to visible lines" bucket rather than on a coincidentally
-  same-numbered line. New-side comments anchor identically in every
-  working-tree view.
-- **Comments made in a commit view are pinned to that commit** (`commit:
-  SHA`, both sides, file-level too). A commit never changes, so they are never
-  re-anchored and their line numbers stay exact.
-- Comments live on a **surface** — the working tree, or one commit (replies
-  follow their root) — and only show inline in views of that surface. Other
-  views show a per-file note ("☗ 2 comments on commit abc1234 · Show") that
-  switches to that view. Guessing where a commit comment lands in the working
-  tree would be fuzzy re-anchoring, which the anchoring rule forbids.
-- A pinned commit that is no longer an ancestor of HEAD (amend, rebase) can't
-  be viewed, so its comments gather in a **"Comments on commits no longer in
-  history"** bucket above the files, with their quoted code. No `patch-id`
-  matching, deliberately.
-- Every draft, whatever its surface, is part of the review and the handoff.
+- **Anchoring:** a new-side draft follows the exact lines it quotes. On load,
+  it's re-located by verbatim search of the working tree, nearest the old
+  position winning; if the lines are gone, it detaches and shows its excerpt.
+  Old-side drafts (on deleted lines) never move, and only anchor in views
+  with the same old side.
+- In split view, a selection with any new-side line anchors on the new side;
+  only an all-deletions selection anchors on the old side, since mixed
+  old-side anchors would detach on reload.
+- **Surfaces:** comments made in a commit view are pinned to that commit and
+  never re-anchored. Other views show a note linking to them. Comments on
+  commits no longer in history collect in their own bucket.
+- Half-written comments are never dropped implicitly: replacing an open form
+  stashes it as an unfinished draft. Only Cancel or Esc discards.
+- A review with no comments is an approval, and still checkpoints.
 
-### Wiping review history
+## Fold vs. Viewed
 
-Git surgery — a rebase, a reset, a re-created branch — makes old snapshots
-diff against a tree that may no longer mean much (it stays a *valid* diff,
-just a bigger one). **Wipe review history** (gear panel → its own
-confirmation dialog → `POST /api/reset-history {scope: "branch"|"all"}`)
-deletes `revisions/` and empties the revision index for the current branch,
-or for every branch under `branches/` (which also drops the shared
-`objects/` store), and removes `pending-review.md` so no agent can act on a
-review that no longer exists.
+Folding is just display. Viewed collapses the file, resets expanded context,
+and is keyed to a signature of the file's diff, so it clears when the diff
+changes.
 
-- **Drafts and Viewed marks are kept**, always and in both scopes: they are
-  the review in progress, not history. That is the one rule the dialog states.
-- Numbering restarts at r1; the "since" views and audit trail disappear and
-  the page falls back to the default view (the client also drops its
-  remembered view, so other tabs land on the stale-view fallback).
-- Deliberately behind the gear, behind a confirmation, with no keyboard
-  shortcut and no undo — it is the only action in the tool that destroys
-  state. A wipe with nothing to delete is not an error; it says so.
+## Handoff
 
-## Finishing & the agent handoff
+Finishing writes `revisions/<n>.json` (comments + the diff as seen), the
+snapshot, and `.gandalf/pending-review.md`. The markdown is self-describing,
+so an agent needs no knowledge of gandalf: "Line N" means the working tree
+now, and commit-pinned comments get their own sections.
 
-- **Finish review (N)** opens a dialog (comment tally + optional overall
-  comment). Confirming POSTs `/api/submit`, which writes
-  `revisions/<n>.json` (comments + the diff of the view the reviewer was in),
-  the snapshot tree, and `.gandalf/pending-review.md`, then clears drafts.
-- The handoff is **self-describing markdown**: a preamble explains line-number
-  semantics ("Line N" = working tree now; "on deleted code" = base version;
-  detached = follow the quoted code), then per-file sections, each comment
-  with its range, `+`/`-`/space-prefixed excerpt, and text. Commit-pinned
-  comments follow in one `## Commit <short> — <subject>` section per commit,
-  oldest first (rewritten ones last, marked "no longer in history"), with
-  `###` file sections; the preamble says their line numbers are that
-  commit's, and to fix the current code rather than rewrite history. An agent
-  needs zero knowledge of gandalf; the whole prompt can be *"Read
-  `.gandalf/pending-review.md` and do what it says."*
-- A second dialog shows the rendered markdown with a **Copy feedback**
-  button (explicit, repeatable — clipboard writes happen on their own click;
-  `ClipboardItem` fed a promise for Safari/Firefox gesture rules).
-- The **audit trail** lists past revisions chronologically (newest last,
-  nearest the fresh changes), each expandable to its frozen diff+comments and
-  re-copyable via **Copy for agent** (`/api/revision-md`). Only comments on
-  the frozen view's surface show inline there; the markdown has them all.
-- Submit flushes the debounced draft save first so it can't land mid-submit
-  and resurrect consumed drafts.
-
-## Staging
-
-- File-level Stage/Unstage buttons per file header (with staged/partially-
-  staged badge); hunk-level Stage/Unstage on hunk headers of `modified`
-  files. Added/deleted/renamed/binary files stage at file level only.
-  Staging only appears in views relative to HEAD (see Views), and hunk
-  staging is unavailable while ignoring whitespace (those hunks aren't valid
-  patches).
-- Per-hunk staged detection is content-based (identical hunk exists in the
-  index), so identical duplicate hunks in one file could confuse the badge —
-  the underlying git state is always right.
-- Requires a writable `.git`; on read-only mounts the buttons error cleanly.
-
-## Staleness
-
-The page polls `/api/status` every 4 s (only while visible). The fingerprint
-hashes the base diff, cached diff, untracked *names*, and HEAD — note it does
-not hash untracked file *contents* (known limitation). On drift, the sticky
-banner offers Refresh; nothing reloads by itself.
-
-There is no topbar Refresh button: a plain page reload re-reads the working
-tree, and the banner's button covers the one moment the reviewer needs to be
-told to. So that a reload is exactly as safe as that button was, `pagehide`
-stashes any open form as an unfinished draft and sends the pending draft save
-with `keepalive` (a normal fetch is cancelled as the page goes away).
-
-## State layout (`<repo root>/.gandalf/`)
+## State
 
 ```
 .gandalf/
-  pending-review.md              # agent-facing handoff: latest review only
-  objects/                       # git objects for snapshot trees (shared by
-                                 # all branches; alternates onto .git)
-  branches/<branch-slug>/
-    state.json                   # drafts, viewed map, revision index
-                                 # (each revision's tree + head)
-    revisions/<n>.json           # per submission: comments + diff then
+  pending-review.md      # latest review only
+  objects/               # snapshot trees, shared across branches
+  branches/<branch>/
+    state.json           # drafts, viewed marks, revision index
+    revisions/<n>.json
 ```
 
-Branch-scoped; detached HEAD uses `detached-<sha>`. All writes are atomic
-(tmp + rename) under a process-wide lock.
+Detached HEAD uses `detached-<sha>`. Writes are atomic, under a process-wide
+lock.
 
-## Testing & verification
+## Known limits
 
-- `cd GandalfServer && swift build -c release && swift test` after every
-  server change; `node --check public/app.js`, `node tests/test_buildrows.js`,
-  `node tests/test_highlight.js` and `node tests/test_filetree.js` for the
-  UI (assert-style, exit code is the result).
-- The Swift tests (`GandalfServer/Tests/GandalfCoreTests`) cover the JSON
-  layer, the diff parser, markdown rendering, state files, draft
-  re-anchoring, the router end-to-end on scripted fixture repos (`git init`
-  in a temp dir), and the NIO server over a real loopback socket. The
-  fixtures under `Tests/GandalfCoreTests/Fixtures` are captured expected
-  outputs (a parsed diff, hunk signatures, rendered markdown); update them
-  deliberately when behavior changes.
-- Server behavior beyond that is exercised end-to-end with curl against
-  throwaway fixture repos (`git init` + scripted edits + the real server on a
-  spare port with `--no-open`).
-- UI changes only need a browser reload (static files are `no-store`);
-  server changes need a rebuild and restart.
-- Layout/visual changes can be checked for real without a desktop: run the
-  server on a fixture repo and drive **headless Firefox** through
-  `geckodriver`'s WebDriver HTTP API from a small script (navigate,
-  wait for `table.diff`, resize, `/screenshot`). Scripted DOM events
-  (`mousedown` on a `.addc` button + `mouseover` + `mouseup` on `document`)
-  exercise drag-selection and the comment forms end to end. That is how the
-  split view's column widths, clipping and selection painting were verified.
+- The staleness fingerprint doesn't hash untracked files' contents.
+- Highlighting is line-by-line, so a hunk starting inside a block comment or
+  multiline string renders plain until it closes.
+- Identical duplicate hunks can confuse the per-hunk staged badge.

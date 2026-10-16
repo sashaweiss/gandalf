@@ -20,8 +20,7 @@ import Testing
         let tmp = try TempDir()
         for (rel, text) in files { try tmp.write(rel, text) }
         let cfg = ReviewConfig(
-            repo: Paths.resolve(tmp.path), base: "HEAD", stateRoot: Paths.join(tmp.path, ".gandalf"),
-            publicDir: tmp.path
+            repo: Paths.resolve(tmp.path), base: "HEAD", stateRoot: Paths.join(tmp.path, ".gandalf")
         )
         return (tmp, cfg)
     }

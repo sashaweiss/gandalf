@@ -1,3 +1,5 @@
 .gandalf/
 .DS_Store
-GandalfServer/.build/
+.build/
+xcuserdata/
+release/

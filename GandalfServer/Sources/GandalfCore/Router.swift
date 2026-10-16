@@ -56,6 +56,17 @@ let contentTypes = [
     "svg": "image/svg+xml",
 ]
 
+/// The web UI, by file name, compiled in from `public/` so the binary is all
+/// there is to install. A file added to `public/` needs an entry here; the
+/// tests check that none is missing.
+let uiFiles: [String: Data] = [
+    "index.html": Data(PackageResources.index_html),
+    "style.css": Data(PackageResources.style_css),
+    "app.js": Data(PackageResources.app_js),
+    "highlight.js": Data(PackageResources.highlight_js),
+    "favicon.svg": Data(PackageResources.favicon_svg),
+]
+
 /// Routes requests to the review logic. Safe to call from any thread: the
 /// only mutable state is on disk, behind `stateLock`.
 public final class Router: Sendable {
@@ -156,15 +167,13 @@ public final class Router: Sendable {
 
     private func get(_ req: Request) throws -> Response {
         switch req.path {
-        case "/": return try serveStatic("index.html")
-        case "/style.css", "/app.js", "/highlight.js", "/index.html", "/favicon.svg":
-            return try serveStatic(String(req.path.dropFirst()))
+        case "/": return serveStatic("index.html")
         case "/api/review": return try apiReview(req)
         case "/api/status": return try apiStatus(req)
         case "/api/file": return try apiFile(req)
         case "/api/revision": return try apiRevision(req, markdown: false)
         case "/api/revision-md": return try apiRevision(req, markdown: true)
-        default: return .error("not found", status: 404)
+        default: return serveStatic(String(req.path.dropFirst()))
         }
     }
 
@@ -179,15 +188,14 @@ public final class Router: Sendable {
         }
     }
 
-    private func serveStatic(_ name: String) throws -> Response {
-        let p = Paths.resolve(Paths.join(cfg.publicDir, name))
-        guard Paths.isInside(p, root: cfg.publicDir), p != cfg.publicDir, Paths.isFile(p) else {
+    private func serveStatic(_ name: String) -> Response {
+        guard let body = uiFiles[name] else {
             return .error("not found", status: 404)
         }
-        let ext = (p as NSString).pathExtension
+        let ext = (name as NSString).pathExtension
         return Response(
             status: 200, contentType: contentTypes[ext] ?? "application/octet-stream",
-            body: try Paths.readData(p)
+            body: body
         )
     }
 

@@ -78,11 +78,10 @@ final class FixtureRepo {
         return try git(["rev-parse", "HEAD"]).trimmed
     }
 
-    func config(base: String = "HEAD", publicDir: String? = nil) -> ReviewConfig {
+    func config(base: String = "HEAD") -> ReviewConfig {
         ReviewConfig(
             repo: Paths.resolve(path), base: base,
-            stateRoot: Paths.join(Paths.resolve(path), stateDirName),
-            publicDir: publicDir ?? Paths.join(path, "public")
+            stateRoot: Paths.join(Paths.resolve(path), stateDirName)
         )
     }
 }

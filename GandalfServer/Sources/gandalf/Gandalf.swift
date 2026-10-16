@@ -6,7 +6,8 @@ import GandalfCore
 struct Gandalf: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "gandalf",
-        abstract: "Gandalf — local review UI"
+        abstract: "Gandalf — local review UI",
+        version: version
     )
 
     @Option(help: "repository to review (default: the git repo containing the cwd)")

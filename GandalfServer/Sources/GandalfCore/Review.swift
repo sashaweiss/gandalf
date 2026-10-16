@@ -22,15 +22,11 @@ public struct ReviewConfig: Sendable {
     public var excludes: [String]
     /// Repo-relative prefixes of untracked files to skip.
     public var skipPrefixes: [String]
-    public var publicDir: String
 
-    public init(repo: String, base: String, stateRoot: String, publicDir: String) {
+    public init(repo: String, base: String, stateRoot: String) {
         self.repo = Paths.resolve(repo)
         self.base = base
         self.stateRoot = stateRoot
-        // Resolved so the static-file guard compares like with like (macOS
-        // temp dirs, for one, sit behind a symlink).
-        self.publicDir = Paths.resolve(publicDir)
         // Keep the state directory itself out of the review: exclude it from
         // the diff / untracked scan when it lives inside the reviewed repo.
         excludes = [":(exclude)\(stateDirName)"]
