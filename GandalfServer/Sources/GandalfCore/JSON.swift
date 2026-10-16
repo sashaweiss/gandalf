@@ -79,67 +79,70 @@ public indirect enum JSON: Equatable, Sendable, CustomStringConvertible {
     // MARK: - Serialization
 
     public func serialized(pretty: Bool = false) -> String {
-        var out = ""
+        var out: [UInt8] = []
+        out.reserveCapacity(1024)
         write(to: &out, pretty: pretty, depth: 0)
-        return out
+        return String(decoding: out, as: UTF8.self)
     }
 
-    private func write(to out: inout String, pretty: Bool, depth: Int) {
+    private func write(to out: inout [UInt8], pretty: Bool, depth: Int) {
         switch self {
-        case .null: out += "null"
-        case .bool(let b): out += b ? "true" : "false"
-        case .int(let i): out += String(i)
-        case .double(let d): out += d.isFinite ? String(d) : "null"
+        case .null: out.append(contentsOf: "null".utf8)
+        case .bool(let b): out.append(contentsOf: (b ? "true" : "false").utf8)
+        case .int(let i): out.append(contentsOf: String(i).utf8)
+        case .double(let d): out.append(contentsOf: (d.isFinite ? String(d) : "null").utf8)
         case .string(let s): JSON.writeString(s, to: &out)
         case .array(let a):
-            if a.isEmpty { out += "[]"; return }
-            out += "["
+            if a.isEmpty { out.append(contentsOf: "[]".utf8); return }
+            out.append(UInt8(ascii: "["))
             for (i, v) in a.enumerated() {
-                if i > 0 { out += "," }
+                if i > 0 { out.append(UInt8(ascii: ",")) }
                 JSON.newline(&out, pretty: pretty, depth: depth + 1)
                 v.write(to: &out, pretty: pretty, depth: depth + 1)
             }
             JSON.newline(&out, pretty: pretty, depth: depth)
-            out += "]"
+            out.append(UInt8(ascii: "]"))
         case .object(let o):
-            if o.isEmpty { out += "{}"; return }
-            out += "{"
+            if o.isEmpty { out.append(contentsOf: "{}".utf8); return }
+            out.append(UInt8(ascii: "{"))
             for (i, key) in o.keys.sorted().enumerated() {
-                if i > 0 { out += "," }
+                if i > 0 { out.append(UInt8(ascii: ",")) }
                 JSON.newline(&out, pretty: pretty, depth: depth + 1)
                 JSON.writeString(key, to: &out)
-                out += pretty ? ": " : ":"
+                out.append(UInt8(ascii: ":"))
+                if pretty { out.append(UInt8(ascii: " ")) }
                 o[key]!.write(to: &out, pretty: pretty, depth: depth + 1)
             }
             JSON.newline(&out, pretty: pretty, depth: depth)
-            out += "}"
+            out.append(UInt8(ascii: "}"))
         }
     }
 
-    private static func newline(_ out: inout String, pretty: Bool, depth: Int) {
+    private static func newline(_ out: inout [UInt8], pretty: Bool, depth: Int) {
         guard pretty else { return }
-        out += "\n"
-        out += String(repeating: "  ", count: depth)
+        out.append(0x0A)
+        out.append(contentsOf: repeatElement(UInt8(ascii: " "), count: 2 * depth))
     }
 
-    private static func writeString(_ s: String, to out: inout String) {
-        out += "\""
-        for scalar in s.unicodeScalars {
-            switch scalar {
-            case "\"": out += "\\\""
-            case "\\": out += "\\\\"
-            case "\n": out += "\\n"
-            case "\r": out += "\\r"
-            case "\t": out += "\\t"
-            default:
-                if scalar.value < 0x20 {
-                    out += String(format: "\\u%04x", scalar.value)
-                } else {
-                    out.unicodeScalars.append(scalar)
-                }
+    private static let hex = Array("0123456789abcdef".utf8)
+
+    private static func writeString(_ s: String, to out: inout [UInt8]) {
+        out.append(UInt8(ascii: "\""))
+        for b in s.utf8 {
+            switch b {
+            case UInt8(ascii: "\""): out.append(contentsOf: [UInt8(ascii: "\\"), UInt8(ascii: "\"")])
+            case UInt8(ascii: "\\"): out.append(contentsOf: [UInt8(ascii: "\\"), UInt8(ascii: "\\")])
+            case 0x0A: out.append(contentsOf: [UInt8(ascii: "\\"), UInt8(ascii: "n")])
+            case 0x0D: out.append(contentsOf: [UInt8(ascii: "\\"), UInt8(ascii: "r")])
+            case 0x09: out.append(contentsOf: [UInt8(ascii: "\\"), UInt8(ascii: "t")])
+            case 0..<0x20:
+                out.append(contentsOf: [UInt8(ascii: "\\"), UInt8(ascii: "u"), UInt8(ascii: "0"), UInt8(ascii: "0")])
+                out.append(hex[Int(b >> 4)])
+                out.append(hex[Int(b & 0xF)])
+            default: out.append(b)
             }
         }
-        out += "\""
+        out.append(UInt8(ascii: "\""))
     }
 
     // MARK: - Parsing

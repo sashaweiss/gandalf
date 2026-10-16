@@ -37,9 +37,30 @@ public struct Hunk: Equatable, Sendable {
     public var newStart: Int
     public var newCount: Int
     public var section: String
-    public var lines: [DiffLine]
+    public let lines: [DiffLine]
     /// An identical hunk is already in the index.
     public var staged = false
+    /// Content signature, independent of line numbers, used to spot hunks
+    /// that are already present in the index (i.e. staged).
+    public let signature: String
+
+    public init(
+        oldStart: Int, oldCount: Int, newStart: Int, newCount: Int, section: String, lines: [DiffLine]
+    ) {
+        self.oldStart = oldStart
+        self.oldCount = oldCount
+        self.newStart = newStart
+        self.newCount = newCount
+        self.section = section
+        self.lines = lines
+        var bytes: [UInt8] = []
+        for l in lines {
+            bytes.append(contentsOf: l.kind.rawValue.utf8)
+            bytes.append(contentsOf: l.text.utf8)
+            bytes.append(0x0A)
+        }
+        signature = Insecure.SHA1.hash(data: bytes).hexString
+    }
 
     public var json: JSON {
         .object([
@@ -53,16 +74,6 @@ public struct Hunk: Equatable, Sendable {
         ])
     }
 
-    /// Content signature of a hunk, independent of line numbers, used to
-    /// spot hunks that are already present in the index (i.e. staged).
-    public var signature: String {
-        var h = Insecure.SHA1()
-        for l in lines {
-            h.update(data: Data((l.kind.rawValue + l.text).utf8))
-            h.update(data: Data([0x0A]))
-        }
-        return h.finalize().hexString
-    }
 }
 
 public struct DiffFile: Equatable, Sendable {
@@ -147,7 +158,36 @@ public enum Diff {
         return p
     }
 
-    static var hunkHeader: Regex<(Substring, Substring, Substring?, Substring, Substring?, Substring)> { /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$/ }
+    /// `@@ -a[,b] +c[,d] @@[ section]`. Hand-parsed: there is one per hunk,
+    /// and a Regex match costs more than the rest of the hunk.
+    static func parseHunkHeader(_ line: String) -> (Int, Int?, Int, Int?, String)? {
+        var bytes = Array(line.utf8)[...]
+        func take(_ prefix: String) -> Bool {
+            guard bytes.starts(with: prefix.utf8) else { return false }
+            bytes = bytes.dropFirst(prefix.utf8.count)
+            return true
+        }
+        func number() -> Int? {
+            var n = 0
+            var any = false
+            while let b = bytes.first, b >= 0x30, b <= 0x39 {
+                n = n * 10 + Int(b - 0x30)
+                any = true
+                bytes = bytes.dropFirst()
+            }
+            return any ? n : nil
+        }
+        guard take("@@ -"), let oldStart = number() else { return nil }
+        var oldCount: Int?
+        if take(",") { guard let n = number() else { return nil }; oldCount = n }
+        guard take(" +"), let newStart = number() else { return nil }
+        var newCount: Int?
+        if take(",") { guard let n = number() else { return nil }; newCount = n }
+        guard take(" @@") else { return nil }
+        _ = take(" ")
+        return (oldStart, oldCount, newStart, newCount, String(decoding: bytes, as: UTF8.self))
+    }
+
     static var diffHeader: Regex<(Substring, Substring, Substring)> { /^diff --git "?a\/(.*?)"? "?b\/(.*?)"?$/ }
 
     public static func parseUnifiedDiff(_ raw: String) -> [DiffFile] {
@@ -214,16 +254,13 @@ public enum Diff {
             }
 
             while i < n, lines[i].hasPrefix("@@") {
-                guard let m = try? hunkHeader.wholeMatch(in: lines[i]) else { break }
+                guard let (oldStart, oldCountOpt, newStart, newCountOpt, section) =
+                    parseHunkHeader(lines[i])
+                else { break }
                 i += 1
-                let oldStart = Int(m.1)!
-                let oldCount = m.2.flatMap { Int($0) } ?? 1
-                let newStart = Int(m.3)!
-                let newCount = m.4.flatMap { Int($0) } ?? 1
-                var hunk = Hunk(
-                    oldStart: oldStart, oldCount: oldCount, newStart: newStart,
-                    newCount: newCount, section: String(m.5), lines: []
-                )
+                let oldCount = oldCountOpt ?? 1
+                let newCount = newCountOpt ?? 1
+                var hunkLines: [DiffLine] = []
                 var oldNum = oldStart
                 var newNum = newStart
                 var oldRem = oldCount
@@ -231,24 +268,24 @@ public enum Diff {
                 while i < n, oldRem > 0 || newRem > 0 {
                     let l = lines[i]
                     if l.hasPrefix("\\") {  // "\ No newline at end of file"
-                        if !hunk.lines.isEmpty { hunk.lines[hunk.lines.count - 1].noNewline = true }
+                        if !hunkLines.isEmpty { hunkLines[hunkLines.count - 1].noNewline = true }
                         i += 1
                         continue
                     }
                     let text = l.droppingFirstByte
                     switch l.firstByte {
                     case UInt8(ascii: "+"):
-                        hunk.lines.append(DiffLine(kind: .add, old: nil, new: newNum, text: text))
+                        hunkLines.append(DiffLine(kind: .add, old: nil, new: newNum, text: text))
                         newNum += 1
                         newRem -= 1
                         f.additions += 1
                     case UInt8(ascii: "-"):
-                        hunk.lines.append(DiffLine(kind: .del, old: oldNum, new: nil, text: text))
+                        hunkLines.append(DiffLine(kind: .del, old: oldNum, new: nil, text: text))
                         oldNum += 1
                         oldRem -= 1
                         f.deletions += 1
                     default:
-                        hunk.lines.append(DiffLine(kind: .ctx, old: oldNum, new: newNum, text: text))
+                        hunkLines.append(DiffLine(kind: .ctx, old: oldNum, new: newNum, text: text))
                         oldNum += 1
                         newNum += 1
                         oldRem -= 1
@@ -256,7 +293,10 @@ public enum Diff {
                     }
                     i += 1
                 }
-                f.hunks.append(hunk)
+                f.hunks.append(Hunk(
+                    oldStart: oldStart, oldCount: oldCount, newStart: newStart,
+                    newCount: newCount, section: section, lines: hunkLines
+                ))
             }
             files.append(f)
         }
@@ -273,7 +313,9 @@ public enum Diff {
     }
 
     public static func countLines(_ data: Data) -> Int {
-        splitLines(data).count
+        if data.isEmpty { return 0 }
+        let newlines = data.withUnsafeBytes { $0.reduce(0) { $0 + ($1 == 0x0A ? 1 : 0) } }
+        return newlines + (data.last == 0x0A ? 0 : 1)
     }
 
     static func synthesizeUntracked(repo: String, rel: String) -> DiffFile? {
@@ -295,14 +337,10 @@ public enum Diff {
         }
         let fileLines = splitLines(data)
         if !fileLines.isEmpty {
-            var hunk = Hunk(
-                oldStart: 0, oldCount: 0, newStart: 1, newCount: fileLines.count,
-                section: "", lines: []
-            )
-            for (idx, t) in fileLines.enumerated() {
-                hunk.lines.append(DiffLine(kind: .add, old: nil, new: idx + 1, text: t))
-            }
-            f.hunks.append(hunk)
+            f.hunks.append(Hunk(
+                oldStart: 0, oldCount: 0, newStart: 1, newCount: fileLines.count, section: "",
+                lines: fileLines.enumerated().map { DiffLine(kind: .add, old: nil, new: $0 + 1, text: $1) }
+            ))
             f.additions = fileLines.count
         }
         f.newTotal = fileLines.count
@@ -316,6 +354,17 @@ public enum Diff {
 }
 
 // MARK: - Hashing
+
+extension HashFunction {
+    mutating func update(string: String) {
+        var s = string
+        s.withUTF8 { update(bufferPointer: UnsafeRawBufferPointer($0)) }
+    }
+
+    mutating func update(bytes: [UInt8]) {
+        bytes.withUnsafeBytes { update(bufferPointer: $0) }
+    }
+}
 
 extension Digest {
     var hexString: String {

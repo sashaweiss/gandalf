@@ -25,7 +25,7 @@ public struct ReviewConfig: Sendable {
     public var publicDir: String
 
     public init(repo: String, base: String, stateRoot: String, publicDir: String) {
-        self.repo = repo
+        self.repo = Paths.resolve(repo)
         self.base = base
         self.stateRoot = stateRoot
         // Resolved so the static-file guard compares like with like (macOS
@@ -35,6 +35,7 @@ public struct ReviewConfig: Sendable {
         // the diff / untracked scan when it lives inside the reviewed repo.
         excludes = [":(exclude)\(stateDirName)"]
         skipPrefixes = []
+        let repo = self.repo
         if Paths.isInside(stateRoot, root: repo) {
             let rel = stateRoot == repo
                 ? "." : String(stateRoot.dropFirst(repo.count + (repo.hasSuffix("/") ? 0 : 1)))
@@ -72,8 +73,8 @@ public enum Review {
         let head = try Git.runText(repo, ["rev-parse", "--short", "HEAD"]).trimmed
         var fp = SHA256()
         for part in [raw, untracked.joined(separator: "\0"), cachedRaw, head] {
-            fp.update(data: Data(part.utf8))
-            fp.update(data: Data([0]))
+            fp.update(string: part)
+            fp.update(bytes: [0])
         }
         return Raws(
             raw: raw, cachedRaw: cachedRaw, unstagedNames: unstagedNames,
@@ -152,15 +153,15 @@ public enum Review {
             let f = files[idx]
             var h = Insecure.SHA1()
             for part in [f.status, f.path ?? "", f.oldPath ?? ""] {
-                h.update(data: Data(part.utf8))
-                h.update(data: Data([0]))
+                h.update(string: part)
+                h.update(bytes: [0])
             }
-            for hk in f.hunks { h.update(data: Data(hk.signature.utf8)) }
+            for hk in f.hunks { h.update(string: hk.signature) }
             if f.binary, let rev {
-                h.update(data: Data(rev.utf8))
+                h.update(string: rev)
             } else if f.binary {
                 if let st = Paths.fileStat(Paths.join(cfg.repo, f.path ?? "")) {
-                    h.update(data: Data("\(st.size):\(st.mtimeNs)".utf8))
+                    h.update(string: "\(st.size):\(st.mtimeNs)")
                 }
             }
             files[idx].sig = String(h.finalize().hexString.prefix(16))
@@ -315,8 +316,9 @@ public enum Review {
 
     // MARK: - Paths
 
+    /// `repo` must already be resolved (`ReviewConfig` guarantees it).
     public static func safeRepoPath(_ repo: String, _ rel: String) throws -> String {
-        let root = Paths.resolve(repo)
+        let root = repo
         let p = Paths.resolve(Paths.join(root, rel))
         if !Paths.isInside(p, root: root) {
             throw ServerError("path outside repository")
