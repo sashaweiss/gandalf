@@ -3,8 +3,8 @@
 This is the maintainer/agent-facing companion to the README (which is the
 short human intro). It records what the tool does in detail, the invariants
 that must not regress, and why the design is the way it is. If you are an
-agent resuming work on this repo: read this before changing `server.py` or
-`public/`.
+agent resuming work on this repo: read this before changing `GandalfServer/`
+or `public/`.
 
 ## What it is
 
@@ -18,13 +18,19 @@ next review can show only what changed since.
 
 ## Hard invariants (do not regress; ask before relaxing)
 
-- **Zero dependencies.** One stdlib-only Python 3.11 file (`server.py`) plus
-  plain HTML/CSS/JS in `public/`. No pip, npm, CDN, or web fonts.
+- **Apple-only dependencies.** The server is a Swift package
+  (`GandalfServer/`) whose only dependencies are packages Apple publishes:
+  SwiftNIO, Swift Argument Parser and Swift Crypto. The UI is plain
+  HTML/CSS/JS in `public/`. No other packages, no npm, CDN, or web fonts. It
+  must keep building on both macOS and Linux.
+- **Deterministic JSON.** API payloads and state files go through the one
+  `JSON` value type (`JSON.swift`), which serializes object keys sorted, so
+  state files diff cleanly and tests can compare output as values.
 - **No network.** The server binds `127.0.0.1` only. The page carries a strict
   CSP (`default-src 'none'; …` in `public/index.html`) that forbids any
   non-local request — keep it intact. Requests are guarded against DNS
   rebinding (Host header check) and cross-site requests (Origin check).
-- **Read-only `.git` must work.** Every git call goes through `run_git()`
+- **Read-only `.git` must work.** Every git call goes through `Git.run`
   with `--no-optional-locks`. Staging is the *only* write path into `.git`
   and must fail gracefully (error toast, everything else keeps working).
   Snapshot trees are written to gandalf's own object store, never `.git`.
@@ -42,11 +48,21 @@ next review can show only what changed since.
 
 ## Architecture
 
-- `gandalf` — launcher script (runpy, symlink-safe). `python3 server.py`
-  works too.
-- `server.py` — stdlib `ThreadingHTTPServer`. Diff collection/parsing,
-  staging, staleness fingerprinting, draft re-anchoring, review snapshots,
-  markdown rendering, static file serving (whitelist, `no-store`).
+- `gandalf` — a symlink to the release binary,
+  `GandalfServer/.build/release/gandalf` (`swift build -c release`). The
+  binary locates `public/` by resolving its own path and walking up to the
+  checkout, so further symlinks (e.g. from `~/.local/bin`) are fine.
+- `GandalfServer/Sources/gandalf` — the CLI: argument parsing only, then
+  `App.run`.
+- `GandalfServer/Sources/GandalfCore` — the library. `Server.swift` is the
+  SwiftNIO HTTP/1.1 front (loopback only; each request runs on a thread pool
+  because git blocks); `Router.swift` is the request handling and the API
+  routes; `Review.swift` diff collection, snapshots and commit listing;
+  `Diff.swift` the unified-diff parser and file model; `Drafts.swift` draft
+  re-anchoring and hunk patches; `State.swift` the branch-scoped state
+  files; `Markdown.swift` the agent handoff; `JSON.swift` the ordered JSON
+  value; `Git.swift`/`Paths.swift`/`Text.swift` the git, filesystem and
+  line-splitting helpers.
 - `public/app.js` — all UI logic. The unit-tested core: `buildRows` (hunks +
   expanded context → display rows), `pairRows` (display rows → side-by-side
   rows), `selectionRows`/`selectionAnchor` (a drag → the comment anchor), and
@@ -75,7 +91,7 @@ next review can show only what changed since.
 - The default diff is `working tree vs --base` (default `HEAD`), staged and
   unstaged alike, plus untracked files (synthesized as all-added).
   `.gandalf/` is excluded. The other views are under "Views" below.
-- Files > 5 MB (`MAX_FILE_BYTES`) and binary files are listed but not
+- Files > 5 MB (`maxFileBytes`) and binary files are listed but not
   rendered.
 - **Ignore whitespace** (checkbox in the Settings gear panel; per-machine
   localStorage):
@@ -207,7 +223,7 @@ revisions (read-only history) never appear in it.
   The anchor side is then decided the same way in both views
   (`selectionAnchor`): anything with a working-tree line number anchors on the
   new side, and only an all-deletions selection anchors on the old side. That
-  is deliberate — `reanchor_drafts` keeps an old-side draft attached only while
+  is deliberate — `Drafts.reanchor` keeps an old-side draft attached only while
   its whole range is deleted lines, so an old-side anchor spanning context
   would detach on the next load. A left-column sweep that mixes deletions and
   context therefore anchors on its context lines, with the deletions still
@@ -315,7 +331,7 @@ come for free.
   which old side it was made against — `base` (the base commit: `--base` or
   the branch point), `baseline`
   (a review number) or `commit` — and only anchors in a view with the same old
-  side (`oldSideKey`/`old_side_key`); elsewhere it renders in the "not
+  side (`oldSideKey`); elsewhere it renders in the "not
   attached to visible lines" bucket rather than on a coincidentally
   same-numbered line. New-side comments anchor identically in every
   working-tree view.
@@ -423,18 +439,25 @@ Branch-scoped; detached HEAD uses `detached-<sha>`. All writes are atomic
 
 ## Testing & verification
 
-- `python3 -m py_compile server.py` and `node --check public/app.js` after
-  every change; `node tests/test_buildrows.js`,
-  `node tests/test_highlight.js` and `node tests/test_filetree.js`
-  (assert-style, exit code is the result).
-- Server behavior is exercised end-to-end with curl against throwaway fixture
-  repos (`git init` + scripted edits + the real server on a spare port) —
-  see git history for examples; there is no committed server test suite yet.
+- `cd GandalfServer && swift build -c release && swift test` after every
+  server change; `node --check public/app.js`, `node tests/test_buildrows.js`,
+  `node tests/test_highlight.js` and `node tests/test_filetree.js` for the
+  UI (assert-style, exit code is the result).
+- The Swift tests (`GandalfServer/Tests/GandalfCoreTests`) cover the JSON
+  layer, the diff parser, markdown rendering, state files, draft
+  re-anchoring, the router end-to-end on scripted fixture repos (`git init`
+  in a temp dir), and the NIO server over a real loopback socket. The
+  fixtures under `Tests/GandalfCoreTests/Fixtures` are captured expected
+  outputs (a parsed diff, hunk signatures, rendered markdown); update them
+  deliberately when behavior changes.
+- Server behavior beyond that is exercised end-to-end with curl against
+  throwaway fixture repos (`git init` + scripted edits + the real server on a
+  spare port with `--no-open`).
 - UI changes only need a browser reload (static files are `no-store`);
-  `server.py` changes need a server restart.
+  server changes need a rebuild and restart.
 - Layout/visual changes can be checked for real without a desktop: run the
   server on a fixture repo and drive **headless Firefox** through
-  `geckodriver`'s WebDriver HTTP API from a stdlib Python script (navigate,
+  `geckodriver`'s WebDriver HTTP API from a small script (navigate,
   wait for `table.diff`, resize, `/screenshot`). Scripted DOM events
   (`mousedown` on a `.addc` button + `mouseover` + `mouseup` on `document`)
   exercise drag-selection and the comment forms end to end. That is how the

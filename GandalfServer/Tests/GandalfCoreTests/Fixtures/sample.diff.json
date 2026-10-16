@@ -1,0 +1,291 @@
+[
+  {
+    "path": "src/main.swift",
+    "oldPath": null,
+    "status": "modified",
+    "binary": false,
+    "additions": 5,
+    "deletions": 3,
+    "hunks": [
+      {
+        "oldStart": 1,
+        "oldCount": 5,
+        "newStart": 1,
+        "newCount": 6,
+        "section": "import Foundation",
+        "lines": [
+          {
+            "t": "ctx",
+            "old": 1,
+            "new": 1,
+            "text": "import Foundation"
+          },
+          {
+            "t": "ctx",
+            "old": 2,
+            "new": 2,
+            "text": ""
+          },
+          {
+            "t": "del",
+            "old": 3,
+            "new": null,
+            "text": "func greet(name: String) -> String {"
+          },
+          {
+            "t": "del",
+            "old": 4,
+            "new": null,
+            "text": "    return \"Hello, \\(name)!\""
+          },
+          {
+            "t": "add",
+            "old": null,
+            "new": 3,
+            "text": "func greet(name: String) -> String { // changed"
+          },
+          {
+            "t": "add",
+            "old": null,
+            "new": 4,
+            "text": "    return \"Howdy, \\(name)!\""
+          },
+          {
+            "t": "add",
+            "old": null,
+            "new": 5,
+            "text": "    // extra"
+          },
+          {
+            "t": "ctx",
+            "old": 5,
+            "new": 6,
+            "text": "}"
+          }
+        ]
+      },
+      {
+        "oldStart": 12,
+        "oldCount": 1,
+        "newStart": 13,
+        "newCount": 2,
+        "section": "",
+        "lines": [
+          {
+            "t": "del",
+            "old": 12,
+            "new": null,
+            "text": "print(greet(name: \"world\"))"
+          },
+          {
+            "t": "add",
+            "old": null,
+            "new": 13,
+            "text": "print(greet(name: \"there\"))"
+          },
+          {
+            "t": "add",
+            "old": null,
+            "new": 14,
+            "text": "print(\"tail\")"
+          }
+        ]
+      }
+    ],
+    "newTotal": null
+  },
+  {
+    "path": "docs/newname.txt",
+    "oldPath": "docs/oldname.txt",
+    "status": "renamed",
+    "binary": false,
+    "additions": 1,
+    "deletions": 1,
+    "hunks": [
+      {
+        "oldStart": 3,
+        "oldCount": 1,
+        "newStart": 3,
+        "newCount": 1,
+        "section": "",
+        "lines": [
+          {
+            "t": "del",
+            "old": 3,
+            "new": null,
+            "text": "line3"
+          },
+          {
+            "t": "add",
+            "old": null,
+            "new": 3,
+            "text": "line three"
+          }
+        ]
+      }
+    ],
+    "newTotal": null
+  },
+  {
+    "path": "docs/img.bin",
+    "oldPath": null,
+    "status": "modified",
+    "binary": true,
+    "additions": 0,
+    "deletions": 0,
+    "hunks": [],
+    "newTotal": null
+  },
+  {
+    "path": "docs/todelete.txt",
+    "oldPath": null,
+    "status": "deleted",
+    "binary": false,
+    "additions": 0,
+    "deletions": 1,
+    "hunks": [
+      {
+        "oldStart": 1,
+        "oldCount": 1,
+        "newStart": 0,
+        "newCount": 0,
+        "section": "",
+        "lines": [
+          {
+            "t": "del",
+            "old": 1,
+            "new": null,
+            "text": "old content"
+          }
+        ]
+      }
+    ],
+    "newTotal": null
+  },
+  {
+    "path": "src/new.swift",
+    "oldPath": null,
+    "status": "added",
+    "binary": false,
+    "additions": 2,
+    "deletions": 0,
+    "hunks": [
+      {
+        "oldStart": 0,
+        "oldCount": 0,
+        "newStart": 1,
+        "newCount": 2,
+        "section": "",
+        "lines": [
+          {
+            "t": "add",
+            "old": null,
+            "new": 1,
+            "text": "new file"
+          },
+          {
+            "t": "add",
+            "old": null,
+            "new": 2,
+            "text": "with lines"
+          }
+        ]
+      }
+    ],
+    "newTotal": null
+  },
+  {
+    "path": "dir with space/tab\tname.txt",
+    "oldPath": null,
+    "status": "modified",
+    "binary": false,
+    "additions": 1,
+    "deletions": 1,
+    "hunks": [
+      {
+        "oldStart": 1,
+        "oldCount": 1,
+        "newStart": 1,
+        "newCount": 1,
+        "section": "",
+        "lines": [
+          {
+            "t": "del",
+            "old": 1,
+            "new": null,
+            "text": "a\tb"
+          },
+          {
+            "t": "add",
+            "old": null,
+            "new": 1,
+            "text": "a\tc"
+          }
+        ]
+      }
+    ],
+    "newTotal": null
+  },
+  {
+    "path": "docs/ünï.md",
+    "oldPath": null,
+    "status": "modified",
+    "binary": false,
+    "additions": 1,
+    "deletions": 0,
+    "hunks": [
+      {
+        "oldStart": 1,
+        "oldCount": 1,
+        "newStart": 1,
+        "newCount": 2,
+        "section": "",
+        "lines": [
+          {
+            "t": "ctx",
+            "old": 1,
+            "new": 1,
+            "text": "ünïcödé"
+          },
+          {
+            "t": "add",
+            "old": null,
+            "new": 2,
+            "text": "more"
+          }
+        ]
+      }
+    ],
+    "newTotal": null
+  },
+  {
+    "path": "script.sh",
+    "oldPath": null,
+    "status": "modified",
+    "binary": false,
+    "additions": 0,
+    "deletions": 0,
+    "hunks": [],
+    "newTotal": null
+  },
+  {
+    "path": "quoted mode.sh",
+    "oldPath": null,
+    "status": "modified",
+    "binary": false,
+    "additions": 0,
+    "deletions": 0,
+    "hunks": [],
+    "newTotal": null
+  },
+  {
+    "path": "empty.txt",
+    "oldPath": null,
+    "status": "added",
+    "binary": false,
+    "additions": 0,
+    "deletions": 0,
+    "hunks": [],
+    "newTotal": null
+  }
+]

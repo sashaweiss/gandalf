@@ -1,0 +1,17 @@
+{
+  "revision": 1,
+  "branch": "main",
+  "base": "HEAD",
+  "baseSha": "abc",
+  "head": "abc1234",
+  "headSha": "abc1234567",
+  "submittedAt": "2026-10-16T03:34:12-07:00",
+  "view": {
+    "kind": "base",
+    "base": "abc",
+    "all": null
+  },
+  "commits": {},
+  "comments": [],
+  "files": []
+}

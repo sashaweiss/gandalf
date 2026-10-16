@@ -1,0 +1,135 @@
+{
+  "revision": 3,
+  "branch": "feature/x",
+  "base": "HEAD",
+  "baseSha": "abc1234567",
+  "head": "deadbee",
+  "headSha": "deadbeef00",
+  "submittedAt": "2026-10-16T03:34:12+00:00",
+  "view": {
+    "kind": "base",
+    "base": "abc1234567",
+    "all": null
+  },
+  "commits": {},
+  "comments": [
+    {
+      "id": "r1",
+      "reviewLevel": true,
+      "file": null,
+      "text": "Overall thoughts.  \n\nSecond para.\n"
+    },
+    {
+      "id": "a",
+      "file": "src/b.swift",
+      "side": "new",
+      "startLine": 10,
+      "endLine": 12,
+      "excerpt": [
+        "+x",
+        " y",
+        "-z"
+      ],
+      "text": "first",
+      "createdAt": "2026-01-01T00:00:02Z"
+    },
+    {
+      "id": "a-reply2",
+      "parentId": "a",
+      "file": "src/b.swift",
+      "text": "later reply",
+      "createdAt": "2026-01-01T00:00:09Z"
+    },
+    {
+      "id": "a-reply1",
+      "parentId": "a",
+      "file": "src/b.swift",
+      "text": "earlier reply",
+      "createdAt": "2026-01-01T00:00:03Z"
+    },
+    {
+      "id": "a-reply-empty",
+      "parentId": "a",
+      "file": "src/b.swift",
+      "text": "   ",
+      "createdAt": "2026-01-01T00:00:01Z"
+    },
+    {
+      "id": "b",
+      "file": "src/b.swift",
+      "fileLevel": true,
+      "text": "file-level"
+    },
+    {
+      "id": "c",
+      "file": "src/a.swift",
+      "side": "old",
+      "startLine": 4,
+      "endLine": 4,
+      "excerpt": [
+        "-gone"
+      ],
+      "text": "deleted base",
+      "base": "abc1234567"
+    },
+    {
+      "id": "d",
+      "file": "src/a.swift",
+      "side": "old",
+      "startLine": 5,
+      "endLine": 6,
+      "excerpt": [
+        "-g1",
+        "-g2"
+      ],
+      "text": "deleted other base",
+      "base": "fedcba9876543"
+    },
+    {
+      "id": "e",
+      "file": "src/a.swift",
+      "side": "old",
+      "startLine": 7,
+      "endLine": 7,
+      "excerpt": [],
+      "text": "since baseline",
+      "baseline": 2,
+      "detached": true
+    },
+    {
+      "id": "f",
+      "file": "src/a.swift",
+      "side": "new",
+      "startLine": 1,
+      "endLine": 1,
+      "excerpt": [
+        " x"
+      ],
+      "text": "detached new",
+      "detached": true
+    },
+    {
+      "id": "g",
+      "file": "src/a.swift",
+      "side": "new",
+      "startLine": 2,
+      "endLine": 2,
+      "excerpt": [
+        " x"
+      ],
+      "text": "float line"
+    },
+    {
+      "id": "h",
+      "file": null,
+      "side": "new",
+      "startLine": 1,
+      "endLine": 1,
+      "excerpt": [
+        " x"
+      ],
+      "text": "no file"
+    }
+  ],
+  "files": []
+}

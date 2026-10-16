@@ -1,0 +1,25 @@
+{
+  "src/main.swift": [
+    "08e0eb649d160e7893e0a0c9f3233c3037a7aad0",
+    "bc784f6fea724307fcd1e802871c9f7b597ff065"
+  ],
+  "docs/newname.txt": [
+    "f655d8035316f1c03852f075a4b474c993fa730c"
+  ],
+  "docs/img.bin": [],
+  "docs/todelete.txt": [
+    "a674fa03036ca1ea083d4141fcff6e052f3da0bb"
+  ],
+  "src/new.swift": [
+    "3ed01dab6f71f0b0af28fc8b3e28c3f4c10c30a0"
+  ],
+  "dir with space/tab\tname.txt": [
+    "bcde445d41ac651bc5439d20f55248e7b73e29ed"
+  ],
+  "docs/ünï.md": [
+    "c5a394864e7250e7451539782b27d6bdaaab63e4"
+  ],
+  "script.sh": [],
+  "quoted mode.sh": [],
+  "empty.txt": []
+}

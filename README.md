@@ -2,11 +2,28 @@
 
 > "this code shall eventually pass"
 
-A local-only, zero-dependency "code review" tool designed for working alongside an AI agent.
+A local-only "code review" tool designed for working alongside an AI agent.
 
-Review and comment on uncommitted changes (made by an agent) — or the commits on your branch — in a browser-based UI powered by a local Python server. Submitting a review provides you with a self-describing markdown summary of your comments, ready to be handed back to the agent.
+Review and comment on uncommitted changes (made by an agent) — or the commits on your branch — in a browser-based UI powered by a local Swift server. Submitting a review provides you with a self-describing markdown summary of your comments, ready to be handed back to the agent.
 
-`gandalf` makes no network requests, has no third-party dependencies besides Python and a browser, and only needs read-only access to `.git`. It stores state relevant to its reviews (not expected to be committed) in `<repo>/.gandalf`.
+`gandalf` makes no network requests, depends only on `git`, a browser, and Apple's Swift packages (SwiftNIO, Swift Argument Parser, Swift Crypto), and only needs read-only access to `.git`. It stores state relevant to its reviews (not expected to be committed) in `<repo>/.gandalf`.
+
+## Building
+
+The server is a Swift package in `GandalfServer/` (a `GandalfCore` library plus a thin `gandalf` CLI). It builds with Swift 6 on macOS and Linux:
+
+```sh
+cd GandalfServer
+swift build -c release
+```
+
+`gandalf` at the repository root is a symlink to the release binary (`GandalfServer/.build/release/gandalf`), so once built, put it on your `PATH`:
+
+```sh
+ln -s /path/to/gandalf/gandalf ~/.local/bin/gandalf
+```
+
+The binary serves the UI from the `public/` directory of its own checkout, which it finds by resolving symlinks, so the checkout can live anywhere.
 
 ## Quickstart
 

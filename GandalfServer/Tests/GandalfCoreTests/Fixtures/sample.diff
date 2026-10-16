@@ -1,0 +1,69 @@
+diff --git a/src/main.swift b/src/main.swift
+index 1111111..2222222 100644
+--- a/src/main.swift
++++ b/src/main.swift
+@@ -1,5 +1,6 @@ import Foundation
+ import Foundation
+ 
+-func greet(name: String) -> String {
+-    return "Hello, \(name)!"
++func greet(name: String) -> String { // changed
++    return "Howdy, \(name)!"
++    // extra
+ }
+@@ -12 +13,2 @@
+-print(greet(name: "world"))
++print(greet(name: "there"))
++print("tail")
+\ No newline at end of file
+diff --git a/docs/oldname.txt b/docs/newname.txt
+similarity index 80%
+rename from docs/oldname.txt
+rename to docs/newname.txt
+index 3333333..4444444 100644
+--- a/docs/oldname.txt
++++ b/docs/newname.txt
+@@ -3 +3 @@
+-line3
++line three
+diff --git a/docs/img.bin b/docs/img.bin
+index 5555555..6666666 100644
+Binary files a/docs/img.bin and b/docs/img.bin differ
+diff --git a/docs/todelete.txt b/docs/todelete.txt
+deleted file mode 100644
+index 7777777..0000000
+--- a/docs/todelete.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-old content
+diff --git a/src/new.swift b/src/new.swift
+new file mode 100644
+index 0000000..8888888
+--- /dev/null
++++ b/src/new.swift
+@@ -0,0 +1,2 @@
++new file
++with lines
+diff --git "a/dir with space/tab\tname.txt" "b/dir with space/tab\tname.txt"
+index 9999999..aaaaaaa 100644
+--- "a/dir with space/tab\tname.txt"
++++ "b/dir with space/tab\tname.txt"
+@@ -1 +1 @@
+-a	b
++a	c
+diff --git "a/docs/\303\274n\303\257.md" "b/docs/\303\274n\303\257.md"
+index bbbbbbb..ccccccc 100644
+--- "a/docs/\303\274n\303\257.md"
++++ "b/docs/\303\274n\303\257.md"
+@@ -1 +1,2 @@
+ ünïcödé
++more
+diff --git a/script.sh b/script.sh
+old mode 100644
+new mode 100755
+diff --git "a/quoted mode.sh" "b/quoted mode.sh"
+old mode 100644
+new mode 100755
+diff --git a/empty.txt b/empty.txt
+new file mode 100644
+index 0000000..e69de29
