@@ -74,6 +74,8 @@ private final class HTTPHandler: ChannelInboundHandler {
     private let pool: NIOThreadPool
     private var head: HTTPRequestHead?
     private var body = Data()
+    /// Requests read but not yet answered on this connection.
+    private var pending = 0
 
     init(router: Router, pool: NIOThreadPool) {
         self.router = router
@@ -104,21 +106,46 @@ private final class HTTPHandler: ChannelInboundHandler {
             let version = head.version
             let router = self.router
             let bound = NIOLoopBound((self, context), eventLoop: context.eventLoop)
+            let summary = "\(request.method) \(request.uri)"
+            let received = DispatchTime.now()
+            pending += 1
             pool.runIfActive(eventLoop: context.eventLoop) {
-                router.handle(request)
+                let started = DispatchTime.now()
+                let response = router.handle(request)
+                let queued = RequestLog.milliseconds(from: received, to: started)
+                let handled = RequestLog.milliseconds(from: started, to: .now())
+                RequestLog.log(
+                    summary, response: response,
+                    timing: "\(handled) ms, \(queued) ms queued"
+                )
+                return response
             }.whenComplete { result in
                 let response: Response
                 switch result {
-                case .success(let r): response = r
-                case .failure(let e): response = .error("\(e)", status: 500)
+                case .success(let r):
+                    response = r
+                case .failure(let e):
+                    Logger.error("\(summary): not handled: \(e)")
+                    response = .error("\(e)", status: 500)
                 }
                 let (handler, context) = bound.value
-                handler.write(response, version: version, keepAlive: keepAlive, context: context)
+                handler.pending -= 1
+                handler.write(
+                    response, summary: summary, version: version,
+                    keepAlive: keepAlive, context: context
+                )
             }
         }
     }
 
-    private func write(_ response: Response, version: HTTPVersion, keepAlive: Bool, context: ChannelHandlerContext) {
+    private func write(
+        _ response: Response, summary: String, version: HTTPVersion,
+        keepAlive: Bool, context: ChannelHandlerContext
+    ) {
+        guard context.channel.isActive else {
+            Logger.warn("\(summary): connection closed before reply")
+            return
+        }
         var headers = HTTPHeaders()
         headers.add(name: "Content-Type", value: response.contentType)
         headers.add(name: "Content-Length", value: String(response.body.count))
@@ -135,13 +162,52 @@ private final class HTTPHandler: ChannelInboundHandler {
         context.write(wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
         let promise = context.eventLoop.makePromise(of: Void.self)
         context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: promise)
+        promise.futureResult.whenFailure { error in
+            Logger.warn("\(summary): reply not sent: \(error)")
+        }
         if !keepAlive {
             let bound = NIOLoopBound(context, eventLoop: context.eventLoop)
             promise.futureResult.whenComplete { _ in bound.value.close(promise: nil) }
         }
     }
 
+    func channelInactive(context: ChannelHandlerContext) {
+        if pending > 0 {
+            Logger.warn(
+                "connection closed with \(pending) request(s) unanswered"
+            )
+        }
+        context.fireChannelInactive()
+    }
+
     func errorCaught(context: ChannelHandlerContext, error: Error) {
+        // Closing without a reply is what a browser reports as an empty
+        // response, so say why.
+        Logger.warn("closing connection after error: \(error)")
         context.close(promise: nil)
+    }
+}
+
+/// One line per request, with how long it waited for the (single) pool
+/// thread and how long it took.
+private enum RequestLog {
+    static func log(
+        _ summary: String, response: Response, timing: String
+    ) {
+        let line = "\(summary) → \(response.status), "
+            + "\(response.body.count) bytes, \(timing)"
+        switch response.status {
+        case 500...:
+            let body = String(decoding: response.body.prefix(500), as: UTF8.self)
+            Logger.warn("\(line): \(body)")
+        default:
+            Logger.debug(line)
+        }
+    }
+
+    static func milliseconds(
+        from start: DispatchTime, to end: DispatchTime
+    ) -> UInt64 {
+        (end.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
     }
 }

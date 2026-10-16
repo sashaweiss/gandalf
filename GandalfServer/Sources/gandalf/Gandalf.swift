@@ -25,6 +25,9 @@ struct Gandalf: ParsableCommand {
     @Flag(name: .customLong("no-open"), help: "don't open the review UI in a browser on startup")
     var noOpen = false
 
+    @Flag(help: "log every request and git call to stderr, not just problems")
+    var verbose = false
+
     func run() throws {
         var options = Options()
         options.repo = repo
@@ -32,6 +35,7 @@ struct Gandalf: ParsableCommand {
         options.stateDir = stateDir
         options.port = port
         options.noOpen = noOpen
+        options.verbose = verbose
         do {
             try App.run(options)
         } catch let e as ExitError {

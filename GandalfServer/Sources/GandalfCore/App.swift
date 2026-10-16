@@ -12,6 +12,8 @@ public struct Options: Sendable {
     public var port: Int?
     /// Don't open the review UI in a browser on startup.
     public var noOpen = false
+    /// Log every request and git call to stderr, not just problems.
+    public var verbose = false
 
     public init() {}
 }
@@ -52,6 +54,7 @@ public enum App {
 
     /// Starts the server and blocks until it stops.
     public static func run(_ options: Options) throws {
+        Logger.verbose = options.verbose
         let cfg = try configure(options)
         let router = Router(cfg)
         let server: Server

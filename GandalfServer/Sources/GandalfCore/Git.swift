@@ -24,12 +24,31 @@ public enum Git {
     public static func run(
         _ repo: String, _ args: [String], input: Data? = nil, env: [String: String]? = nil
     ) throws -> Data {
-        let result = try Subprocess.run(
-            executable: "git",
-            arguments: ["--no-optional-locks", "-C", repo] + args,
-            input: input,
-            extraEnvironment: env
-        )
+        let started = DispatchTime.now()
+        let result: Subprocess.Result
+        do {
+            result = try Subprocess.run(
+                executable: "git",
+                arguments: ["--no-optional-locks", "-C", repo] + args,
+                input: input,
+                extraEnvironment: env
+            )
+        } catch {
+            Logger.error("git \(args.joined(separator: " ")): \(error)")
+            throw error
+        }
+        let elapsed =
+            (DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds)
+            / 1_000_000
+        // Some calls fail by design (e.g. probing a ref), so a failure alone
+        // isn't worth more than debug; slowness is.
+        let line = "git \(args.joined(separator: " ")) → \(result.status), "
+            + "\(elapsed) ms"
+        if elapsed >= 1000 {
+            Logger.warn(line)
+        } else {
+            Logger.debug(line)
+        }
         if result.status != 0 {
             let stderr = String(decoding: result.stderr, as: UTF8.self).trimmed
             throw GitError(stderr.isEmpty ? "git \(args.first ?? "") failed" : stderr)
