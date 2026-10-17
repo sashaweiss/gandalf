@@ -34,7 +34,7 @@ public enum App {
 
     /// Resolves the options into a configuration: the repository root and the
     /// state directory.
-    public static func configure(_ options: Options) throws -> ReviewConfig {
+    public static func configure(_ options: Options) async throws -> ReviewConfig {
         let repo: String
         if let given = options.repo {
             repo = Paths.resolve(given)
@@ -43,7 +43,7 @@ public enum App {
             }
         } else {
             do {
-                let top = try Git.runText(FileManager.default.currentDirectoryPath, ["rev-parse", "--show-toplevel"])
+                let top = try await Git.runText(FileManager.default.currentDirectoryPath, ["rev-parse", "--show-toplevel"])
                 repo = Paths.resolve(top.trimmed)
             } catch let e as GitError {
                 throw ExitError("error: not inside a git repository (\(e))")
@@ -53,21 +53,21 @@ public enum App {
         return ReviewConfig(repo: repo, base: options.base, stateRoot: stateRoot)
     }
 
-    /// Starts the server and blocks until it stops.
-    public static func run(_ options: Options) throws {
+    /// Starts the server and returns once it stops.
+    public static func run(_ options: Options) async throws {
         Logger.verbose = options.verbose
-        let cfg = try configure(options)
+        let cfg = try await configure(options)
         let router = Router(cfg)
         let server: Server
         if let port = options.port {
             // An explicit port is a promise: fail loudly rather than move the URL.
             do {
-                server = try Server(router: router, port: port)
+                server = try await Server(router: router, port: port)
             } catch {
                 throw ExitError("error: cannot bind port \(port): \(error)")
             }
         } else {
-            guard let bound = Server.bindingNextFree(router: router, from: defaultPort) else {
+            guard let bound = await Server.bindingNextFree(router: router, from: defaultPort) else {
                 throw ExitError("error: no free port in \(defaultPort)–\(defaultPort + 49); use --port")
             }
             server = bound
@@ -82,7 +82,7 @@ public enum App {
             // are silent and the printed URL is the fallback.
             openBrowser(url)
         }
-        try server.serveForever()
+        await server.serve()
     }
 
     static func openBrowser(_ url: String) {
@@ -91,6 +91,7 @@ public enum App {
         #else
         let opener = ["xdg-open", url]
         #endif
+        // Unstructured, so serving doesn't wait on it; failures are silent.
         Task {
             _ = try? await Subprocess.run(
                 .name(opener[0]),

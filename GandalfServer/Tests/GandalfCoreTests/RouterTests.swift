@@ -3,7 +3,7 @@ import Testing
 @testable import GandalfCore
 
 @Suite struct RequestParsingTests {
-    @Test func pathAndQuery() {
+    @Test func pathAndQuery() async {
         let r = Request(method: "GET", uri: "/api/review?since=2&ws=1&empty=&a=x+y%2Fz&a=2#frag")
         #expect(r.path == "/api/review")
         #expect(r.queryValue("since") == "2")
@@ -15,7 +15,7 @@ import Testing
         #expect(Request(method: "GET", uri: "/api/file?path=dir%20with%20space%2Fx.txt").queryValue("path") == "dir with space/x.txt")
     }
 
-    @Test func hostAndOriginChecks() {
+    @Test func hostAndOriginChecks() async {
         #expect(Router.hostIsLoopback("127.0.0.1:4633"))
         #expect(Router.hostIsLoopback("localhost"))
         #expect(Router.hostIsLoopback("[::1]:4633"))
@@ -54,50 +54,50 @@ import Testing
     static let stagedEdit = original.replacingOccurrences(of: "print(\"hi\")", with: "print(\"hello\")")
     static let bothEdits = stagedEdit.replacingOccurrences(of: "func other() {}", with: "func other() { /* x */ }")
 
-    func makeRepo() throws -> (FixtureRepo, Router) {
-        let repo = try FixtureRepo()
+    func makeRepo() async throws -> (FixtureRepo, Router) {
+        let repo = try await FixtureRepo()
         try repo.write("src/main.swift", Self.original)
         try repo.write("docs/gone.txt", "gone\n")
         try repo.write("docs/old.txt", "1\n2\n3\n4\n5\n")
         try repo.write("img.bin", "\u{0}bin")
         try repo.write(".gitignore", ".gandalf/\n")
-        _ = try repo.commit("Initial")
+        _ = try await repo.commit("Initial")
         try repo.write("src/main.swift", Self.stagedEdit)
-        try repo.git(["add", "src/main.swift"])
+        try await repo.git(["add", "src/main.swift"])
         try repo.write("src/main.swift", Self.bothEdits)
-        try repo.git(["rm", "-q", "docs/gone.txt"])
-        try repo.git(["mv", "docs/old.txt", "docs/new.txt"])
+        try await repo.git(["rm", "-q", "docs/gone.txt"])
+        try await repo.git(["mv", "docs/old.txt", "docs/new.txt"])
         try repo.write("img.bin", "\u{0}bin2")
         try repo.write("untracked.txt", "u1\nu2\n")
         return (repo, Router(repo.config()))
     }
 
-    @Test func guardsNonLocalRequests() throws {
-        let (repo, router) = try makeRepo()
+    @Test func guardsNonLocalRequests() async throws {
+        let (repo, router) = try await makeRepo()
         defer { withExtendedLifetime(repo) {} }
-        let host = router.handle(Request(method: "GET", uri: "/api/status", headers: ["host": "evil:1"]))
+        let host = await router.handle(Request(method: "GET", uri: "/api/status", headers: ["host": "evil:1"]))
         #expect(host.status == 403 && host.text == #"{"error":"forbidden: non-local Host header"}"#)
-        let origin = router.get("/api/status", headers: ["origin": "http://evil"])
+        let origin = await router.get("/api/status", headers: ["origin": "http://evil"])
         #expect(origin.status == 403 && origin.text == #"{"error":"forbidden: cross-origin request"}"#)
-        #expect(router.get("/api/status", headers: ["origin": "http://127.0.0.1:1"]).status == 200)
-        #expect(router.handle(Request(method: "PUT", uri: "/api/status", headers: ["host": "localhost"])).status == 501)
+        #expect(await router.get("/api/status", headers: ["origin": "http://127.0.0.1:1"]).status == 200)
+        #expect(await router.handle(Request(method: "PUT", uri: "/api/status", headers: ["host": "localhost"])).status == 501)
     }
 
-    @Test func servesTheEmbeddedUI() throws {
-        let (repo, router) = try makeRepo()
+    @Test func servesTheEmbeddedUI() async throws {
+        let (repo, router) = try await makeRepo()
         defer { withExtendedLifetime(repo) {} }
-        let index = router.get("/")
+        let index = await router.get("/")
         #expect(index.status == 200 && index.contentType == "text/html; charset=utf-8")
         #expect(index.body == uiFiles["index.html"])
-        #expect(router.get("/app.js").contentType == "text/javascript; charset=utf-8")
-        #expect(router.get("/secret.txt").status == 404)
-        #expect(router.get("/public/index.html").status == 404)
-        #expect(router.get("/nope").text == #"{"error":"not found"}"#)
-        #expect(router.get("/api/nope").status == 404)
+        #expect(await router.get("/app.js").contentType == "text/javascript; charset=utf-8")
+        #expect(await router.get("/secret.txt").status == 404)
+        #expect(await router.get("/public/index.html").status == 404)
+        #expect(await router.get("/nope").text == #"{"error":"not found"}"#)
+        #expect(await router.get("/api/nope").status == 404)
     }
 
     /// Every file in the repo's `public/` is compiled in and served as is.
-    @Test func embedsAllOfPublic() throws {
+    @Test func embedsAllOfPublic() async throws {
         let publicDir = URL(filePath: #filePath)
             .deletingLastPathComponent()
             .appending(path: "../../../public")
@@ -105,20 +105,20 @@ import Testing
         let names = try FileManager.default.contentsOfDirectory(atPath: publicDir)
             .filter { !$0.hasPrefix(".") }  // e.g. .DS_Store
         #expect(Set(names) == Set(uiFiles.keys))
-        let (repo, router) = try makeRepo()
+        let (repo, router) = try await makeRepo()
         defer { withExtendedLifetime(repo) {} }
         for name in names {
-            let served = router.get("/" + name)
+            let served = await router.get("/" + name)
             #expect(served.status == 200, "\(name)")
             #expect(served.contentType != "application/octet-stream", "\(name)")
             #expect(served.body == FileManager.default.contents(atPath: Paths.join(publicDir, name)), "\(name)")
         }
     }
 
-    @Test func reviewPayloadShape() throws {
-        let (repo, router) = try makeRepo()
+    @Test func reviewPayloadShape() async throws {
+        let (repo, router) = try await makeRepo()
         defer { withExtendedLifetime(repo) {} }
-        let r = router.get("/api/review")
+        let r = await router.get("/api/review")
         #expect(r.status == 200)
         let o = try #require(r.json.objectValue)
         #expect(o.keys.sorted() == [
@@ -147,37 +147,37 @@ import Testing
         #expect(byPath["src/main.swift"]?["viewed"] == .bool(false))
         #expect(byPath["src/main.swift"]?["viewedKey"] == .string("src/main.swift"))
 
-        let status = router.get("/api/status").json
+        let status = await router.get("/api/status").json
         #expect(status["fingerprint"] == o["fingerprint"])
         #expect(status["head"] == o["head"])
     }
 
-    @Test func whitespaceModeAndFileEndpoint() throws {
-        let (repo, router) = try makeRepo()
+    @Test func whitespaceModeAndFileEndpoint() async throws {
+        let (repo, router) = try await makeRepo()
         defer { withExtendedLifetime(repo) {} }
         try repo.write("ws.txt", "a\n")
-        _ = try repo.commit("ws")
+        _ = try await repo.commit("ws")
         try repo.write("ws.txt", "a  \n")
-        let plain = router.get("/api/review").json
+        let plain = await router.get("/api/review").json
         #expect(plain["files"].arrayValue!.contains { $0["path"] == .string("ws.txt") })
-        let ws = router.get("/api/review?ws=1").json
+        let ws = await router.get("/api/review?ws=1").json
         #expect(!ws["files"].arrayValue!.contains { $0["path"] == .string("ws.txt") })
         #expect(ws["ignoreWhitespace"] == .bool(true))
         #expect(ws["fingerprint"] != plain["fingerprint"])
 
-        let file = router.get("/api/file?path=src%2Fmain.swift").json
+        let file = await router.get("/api/file?path=src%2Fmain.swift").json
         #expect(file["lines"].arrayValue?.count == 14)
-        #expect(router.get("/api/file").text == #"{"error":"missing ?path="}"#)
-        #expect(router.get("/api/file?path=missing.txt").status == 404)
-        #expect(router.get("/api/file?path=../x").status == 500)
-        #expect(router.get("/api/file?path=src/main.swift&rev=zz").status == 400)
-        let initial = try repo.git(["rev-parse", "HEAD~1"]).trimmed
-        let atInitial = router.get("/api/file?path=src/main.swift&rev=\(initial)").json
+        #expect(await router.get("/api/file").text == #"{"error":"missing ?path="}"#)
+        #expect(await router.get("/api/file?path=missing.txt").status == 404)
+        #expect(await router.get("/api/file?path=../x").status == 500)
+        #expect(await router.get("/api/file?path=src/main.swift&rev=zz").status == 400)
+        let initial = try await repo.git(["rev-parse", "HEAD~1"]).trimmed
+        let atInitial = await router.get("/api/file?path=src/main.swift&rev=\(initial)").json
         #expect(atInitial["lines"].arrayValue?[3] == .string("    print(\"hi\")"))
     }
 
-    @Test func draftsViewedAndReanchoring() throws {
-        let (repo, router) = try makeRepo()
+    @Test func draftsViewedAndReanchoring() async throws {
+        let (repo, router) = try await makeRepo()
         defer { withExtendedLifetime(repo) {} }
         let drafts = try JSON.parse(#"""
         [{"id": "d1", "file": "src/main.swift", "side": "new", "startLine": 4, "endLine": 4,
@@ -186,13 +186,13 @@ import Testing
           "excerpt": [" nope"], "text": "detached"}]
         """#)
         let body: [String: JSON] = ["drafts": drafts]
-        let saved = router.post("/api/drafts", .object(body))
+        let saved = await router.post("/api/drafts", .object(body))
         #expect(saved.text == #"{"count":2,"ok":true}"#)
-        #expect(router.post("/api/drafts", .object(["drafts": .string("x")])).status == 400)
+        #expect(await router.post("/api/drafts", .object(["drafts": .string("x")])).status == 400)
 
         // Insert a line above: the first draft follows, the second detaches.
         try repo.write("src/main.swift", "// new\n" + Self.bothEdits)
-        let r = router.get("/api/review").json
+        let r = await router.get("/api/review").json
         let d = r["drafts"].arrayValue!
         #expect(d[0]["startLine"] == .int(5) && d[0]["detached"] == .bool(false))
         #expect(d[1]["detached"] == .bool(true))
@@ -202,18 +202,18 @@ import Testing
 
         let file = r["files"].arrayValue!.first { $0["path"] == .string("src/main.swift") }!
         let viewed: [String: JSON] = ["path": .string("src/main.swift"), "sig": file["sig"], "viewed": .bool(true)]
-        #expect(router.post("/api/viewed", .object(viewed)).text == #"{"ok":true}"#)
-        let again = router.get("/api/review").json["files"].arrayValue!.first { $0["path"] == .string("src/main.swift") }!
+        #expect(await router.post("/api/viewed", .object(viewed)).text == #"{"ok":true}"#)
+        let again = await router.get("/api/review").json["files"].arrayValue!.first { $0["path"] == .string("src/main.swift") }!
         #expect(again["viewed"] == .bool(true))
         // Any change to the file clears the mark.
         try repo.write("src/main.swift", "// changed\nimport Foundation\n")
-        let cleared = router.get("/api/review").json["files"].arrayValue!.first { $0["path"] == .string("src/main.swift") }!
+        let cleared = await router.get("/api/review").json["files"].arrayValue!.first { $0["path"] == .string("src/main.swift") }!
         #expect(cleared["viewed"] == .bool(false))
-        #expect(router.post("/api/viewed", .object(["path": .int(1)])).status == 400)
+        #expect(await router.post("/api/viewed", .object(["path": .int(1)])).status == 400)
     }
 
-    @Test func submitSinceAndWipe() throws {
-        let (repo, router) = try makeRepo()
+    @Test func submitSinceAndWipe() async throws {
+        let (repo, router) = try await makeRepo()
         defer { withExtendedLifetime(repo) {} }
         let comments = try JSON.parse(#"""
         [{"id": "c1", "file": "src/main.swift", "side": "new", "startLine": 4, "endLine": 4,
@@ -221,7 +221,7 @@ import Testing
          {"id": "o", "reviewLevel": true, "file": null, "text": "overall"}]
         """#)
         let body: [String: JSON] = ["comments": comments, "view": .object([:])]
-        let sub = router.post("/api/submit", .object(body)).json
+        let sub = await router.post("/api/submit", .object(body)).json
         #expect(sub["ok"] == .bool(true) && sub["revision"] == .int(1))
         let md = sub["markdown"].stringValue!
         #expect(md.hasPrefix("# Code review — please address each comment\n"))
@@ -231,60 +231,60 @@ import Testing
         #expect(revs.count == 1 && revs[0]["commentCount"] == .int(2) && revs[0]["tree"].stringValue?.count == 40)
 
         // Drafts were consumed; the since view is empty until something changes.
-        let after = router.get("/api/review").json
+        let after = await router.get("/api/review").json
         #expect(after["drafts"] == .array([]))
-        let since = router.get("/api/review?since=1").json
+        let since = await router.get("/api/review?since=1").json
         #expect(since["view"]["kind"] == .string("since") && since["view"]["since"] == .int(1))
-        #expect(router.get("/api/review?since=01").status == 200)
+        #expect(await router.get("/api/review?since=01").status == 200)
         #expect(since["files"] == .array([]))
         try repo.write("untracked.txt", "u1\nu2\nu3\n")
-        let sinceChanged = router.get("/api/review?since=1").json["files"].arrayValue!
+        let sinceChanged = await router.get("/api/review?since=1").json["files"].arrayValue!
         #expect(sinceChanged.map { $0["path"].stringValue! } == ["untracked.txt"])
         #expect(sinceChanged[0]["additions"] == .int(1))
         #expect(sinceChanged[0]["stagedState"] == .null)
-        #expect(router.get("/api/review?since=2").text == #"{"error":"no snapshot for review r2"}"#)
+        #expect(await router.get("/api/review?since=2").text == #"{"error":"no snapshot for review r2"}"#)
 
-        #expect(router.get("/api/revision?n=1").json["comments"] == comments)
-        #expect(router.get("/api/revision-md?n=1").json["markdown"] == .string(md))
-        #expect(router.get("/api/revision?n=x").status == 400)
-        #expect(router.get("/api/revision?n=5").status == 404)
+        #expect(await router.get("/api/revision?n=1").json["comments"] == comments)
+        #expect(await router.get("/api/revision-md?n=1").json["markdown"] == .string(md))
+        #expect(await router.get("/api/revision?n=x").status == 400)
+        #expect(await router.get("/api/revision?n=5").status == 404)
 
         // An empty review is an approval and still checkpoints.
         let empty: [String: JSON] = ["comments": .array([]), "view": .object(["since": .string("1")])]
-        let approval = router.post("/api/submit", .object(empty)).json
+        let approval = await router.post("/api/submit", .object(empty)).json
         #expect(approval["revision"] == .int(2))
         #expect(approval["markdown"].stringValue!.hasPrefix("# Code review — approved"))
-        #expect(router.get("/api/revision?n=2").json["view"]["kind"] == .string("since"))
+        #expect(await router.get("/api/revision?n=2").json["view"]["kind"] == .string("since"))
 
-        let wipe = router.post("/api/reset-history", .object(["scope": .string("branch")])).json
+        let wipe = await router.post("/api/reset-history", .object(["scope": .string("branch")])).json
         #expect(wipe == .object(["ok": .bool(true), "reviews": .int(2), "branches": .int(1)]))
-        #expect(router.get("/api/review?since=1").status == 404)
+        #expect(await router.get("/api/review?since=1").status == 404)
         #expect(!Paths.exists(Paths.join(router.cfg.stateRoot, "pending-review.md")))
-        #expect(router.post("/api/reset-history", .object(["scope": .string("nope")])).status == 400)
+        #expect(await router.post("/api/reset-history", .object(["scope": .string("nope")])).status == 400)
     }
 
-    @Test func commitViewsAndPinnedComments() throws {
-        let (repo, router) = try makeRepo()
+    @Test func commitViewsAndPinnedComments() async throws {
+        let (repo, router) = try await makeRepo()
         defer { withExtendedLifetime(repo) {} }
-        try repo.git(["checkout", "-q", "-b", "feature"])
+        try await repo.git(["checkout", "-q", "-b", "feature"])
         try repo.write("feature.txt", "f1\n")
-        let sha = try repo.commit("Add feature", paths: ["feature.txt"])
-        let r = router.get("/api/review").json
+        let sha = try await repo.commit("Add feature", paths: ["feature.txt"])
+        let r = await router.get("/api/review").json
         #expect(r["allChanges"] == .string("main"))
         let commits = r["commits"].arrayValue!
         #expect(commits.count == 1 && commits[0]["sha"] == .string(sha) && commits[0]["subject"] == .string("Add feature"))
 
-        let view = router.get("/api/review?commit=\(sha)").json
+        let view = await router.get("/api/review?commit=\(sha)").json
         #expect(view["view"]["kind"] == .string("commit") && view["fingerprint"] == .null)
         let files = view["files"].arrayValue!
         #expect(files.map { $0["path"].stringValue! } == ["feature.txt"])
         #expect(files[0]["viewedKey"] == .string("\(sha):feature.txt"))
         #expect(files[0]["stagedState"] == .null)
-        #expect(router.get("/api/review?commit=\(String(sha.prefix(7)))").status == 200)
-        #expect(router.get("/api/review?commit=zz").text == #"{"error":"no such commit zz"}"#)
-        #expect(router.get("/api/review?commit=abcdef").status == 404)
+        #expect(await router.get("/api/review?commit=\(String(sha.prefix(7)))").status == 200)
+        #expect(await router.get("/api/review?commit=zz").text == #"{"error":"no such commit zz"}"#)
+        #expect(await router.get("/api/review?commit=abcdef").status == 404)
 
-        let all = router.get("/api/review?all=1").json
+        let all = await router.get("/api/review?all=1").json
         #expect(all["view"]["all"] == .string("main"))
         #expect(all["files"].arrayValue!.contains { $0["path"] == .string("feature.txt") })
         #expect(all["files"].arrayValue!.allSatisfy { $0["stagedState"] == .null })
@@ -295,99 +295,99 @@ import Testing
           "text": "pinned", "commit": "\#(sha)"},
          {"id": "l", "file": "x", "fileLevel": true, "text": "lost", "commit": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}]
         """#)
-        _ = router.post("/api/drafts", .object(["drafts": drafts]))
-        let withLost = router.get("/api/review").json
+        _ = await router.post("/api/drafts", .object(["drafts": drafts]))
+        let withLost = await router.get("/api/review").json
         #expect(withLost["lostCommits"] == .array([.string("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")]))
 
         let body: [String: JSON] = ["comments": drafts, "view": .object(["commit": .string(sha)])]
-        let md = router.post("/api/submit", .object(body)).json["markdown"].stringValue!
+        let md = await router.post("/api/submit", .object(body)).json["markdown"].stringValue!
         #expect(md.contains("## Commit `\(sha.prefix(7))` — Add feature\n\n### feature.txt\n"))
         #expect(md.contains("## Commit `deadbee` (no longer in history)\n"))
-        #expect(router.get("/api/revision?n=1").json["view"]["commit"] == .string(sha))
+        #expect(await router.get("/api/revision?n=1").json["view"]["commit"] == .string(sha))
     }
 
-    @Test func stagingRoundTrip() throws {
-        let (repo, router) = try makeRepo()
+    @Test func stagingRoundTrip() async throws {
+        let (repo, router) = try await makeRepo()
         defer { withExtendedLifetime(repo) {} }
-        let before = router.get("/api/review").json["files"].arrayValue!.first { $0["path"] == .string("src/main.swift") }!
+        let before = await router.get("/api/review").json["files"].arrayValue!.first { $0["path"] == .string("src/main.swift") }!
         let unstagedHunk = before["hunks"].arrayValue![1]
         var stage: [String: JSON] = ["action": .string("stage-hunk"), "path": .string("src/main.swift"), "hunk": unstagedHunk]
-        #expect(router.post("/api/stage", .object(stage)).text == #"{"ok":true}"#)
-        let staged = router.get("/api/review").json["files"].arrayValue!.first { $0["path"] == .string("src/main.swift") }!
+        #expect(await router.post("/api/stage", .object(stage)).text == #"{"ok":true}"#)
+        let staged = await router.get("/api/review").json["files"].arrayValue!.first { $0["path"] == .string("src/main.swift") }!
         #expect(staged["stagedState"] == .string("full"))
         stage["action"] = .string("unstage-hunk")
-        #expect(router.post("/api/stage", .object(stage)).status == 200)
-        let partial = router.get("/api/review").json["files"].arrayValue!.first { $0["path"] == .string("src/main.swift") }!
+        #expect(await router.post("/api/stage", .object(stage)).status == 200)
+        let partial = await router.get("/api/review").json["files"].arrayValue!.first { $0["path"] == .string("src/main.swift") }!
         #expect(partial["stagedState"] == .string("partial"))
 
         var file: [String: JSON] = ["action": .string("unstage-file"), "path": .string("src/main.swift")]
-        #expect(router.post("/api/stage", .object(file)).status == 200)
-        let none = router.get("/api/review").json["files"].arrayValue!.first { $0["path"] == .string("src/main.swift") }!
+        #expect(await router.post("/api/stage", .object(file)).status == 200)
+        let none = await router.get("/api/review").json["files"].arrayValue!.first { $0["path"] == .string("src/main.swift") }!
         #expect(none["stagedState"] == .string("none"))
         file["action"] = .string("stage-file")
-        #expect(router.post("/api/stage", .object(file)).status == 200)
+        #expect(await router.post("/api/stage", .object(file)).status == 200)
 
-        #expect(router.post("/api/stage", .object(["action": .string("stage-file")])).text == #"{"error":"missing path"}"#)
-        #expect(router.post("/api/stage", .object(["action": .string("stage-file"), "path": .string("../x")])).text == #"{"error":"path outside repository"}"#)
-        #expect(router.post("/api/stage", .object(["action": .string("zap"), "path": .string("x")])).text == #"{"error":"unknown action"}"#)
-        #expect(router.post("/api/stage", .object(["action": .string("stage-hunk"), "path": .string("x")])).text == #"{"error":"missing hunk"}"#)
+        #expect(await router.post("/api/stage", .object(["action": .string("stage-file")])).text == #"{"error":"missing path"}"#)
+        #expect(await router.post("/api/stage", .object(["action": .string("stage-file"), "path": .string("../x")])).text == #"{"error":"path outside repository"}"#)
+        #expect(await router.post("/api/stage", .object(["action": .string("zap"), "path": .string("x")])).text == #"{"error":"unknown action"}"#)
+        #expect(await router.post("/api/stage", .object(["action": .string("stage-hunk"), "path": .string("x")])).text == #"{"error":"missing hunk"}"#)
     }
 
-    @Test func gitFailuresSurfaceAsErrors() throws {
-        let repo = try FixtureRepo()  // no commits yet
+    @Test func gitFailuresSurfaceAsErrors() async throws {
+        let repo = try await FixtureRepo()  // no commits yet
         try repo.write("x.txt", "x\n")
         let router = Router(repo.config())
-        let r = router.get("/api/review")
+        let r = await router.get("/api/review")
         #expect(r.status == 500)
         #expect(r.json["error"].stringValue!.hasPrefix("git: "))
         let bad = Router(repo.config(base: "nosuchref"))
-        _ = try repo.commit("one")
-        #expect(bad.get("/api/review").text == #"{"error":"git: unknown base ref 'nosuchref'"}"#)
-        let badBody = router.handle(Request(method: "POST", uri: "/api/drafts", headers: ["host": "localhost"], body: Data("nope".utf8)))
+        _ = try await repo.commit("one")
+        #expect(await bad.get("/api/review").text == #"{"error":"git: unknown base ref 'nosuchref'"}"#)
+        let badBody = await router.handle(Request(method: "POST", uri: "/api/drafts", headers: ["host": "localhost"], body: Data("nope".utf8)))
         #expect(badBody.text == #"{"error":"invalid JSON: expected a value at offset 0"}"#)
     }
 
-    @Test func detachedHeadBranchName() throws {
-        let (repo, router) = try makeRepo()
+    @Test func detachedHeadBranchName() async throws {
+        let (repo, router) = try await makeRepo()
         defer { withExtendedLifetime(repo) {} }
-        let sha = try repo.git(["rev-parse", "--short", "HEAD"]).trimmed
-        try repo.git(["checkout", "-q", "--detach"])
-        #expect(router.get("/api/review").json["branch"] == .string("detached-\(sha)"))
+        let sha = try await repo.git(["rev-parse", "--short", "HEAD"]).trimmed
+        try await repo.git(["checkout", "-q", "--detach"])
+        #expect(await router.get("/api/review").json["branch"] == .string("detached-\(sha)"))
     }
 
-    @Test func stateDirInsideRepoIsExcluded() throws {
-        let repo = try FixtureRepo()
+    @Test func stateDirInsideRepoIsExcluded() async throws {
+        let repo = try await FixtureRepo()
         try repo.write("a.txt", "a\n")
-        _ = try repo.commit("one")
+        _ = try await repo.commit("one")
         let stateRoot = Paths.join(Paths.resolve(repo.path), "custom/state")
         let cfg = ReviewConfig(repo: Paths.resolve(repo.path), base: "HEAD", stateRoot: stateRoot)
         #expect(cfg.excludes == [":(exclude).gandalf", ":(exclude)custom/state"])
         #expect(cfg.skipPrefixes == ["custom/state"])
         #expect(cfg.statePaths == [".gandalf", "custom/state"])
         let router = Router(cfg)
-        _ = router.post("/api/drafts", .object(["drafts": .array([])]))
+        _ = await router.post("/api/drafts", .object(["drafts": .array([])]))
         #expect(Paths.exists(Paths.join(stateRoot, "branches/main/state.json")))
-        #expect(router.get("/api/review").json["files"] == .array([]))
+        #expect(await router.get("/api/review").json["files"] == .array([]))
         let outside = ReviewConfig(repo: Paths.resolve(repo.path), base: "HEAD", stateRoot: "/tmp/elsewhere")
         #expect(outside.excludes == [":(exclude).gandalf"] && outside.skipPrefixes.isEmpty)
     }
 }
 
 @Suite struct AppTests {
-    @Test func configureFindsRepoFromOptions() throws {
-        let repo = try FixtureRepo()
+    @Test func configureFindsRepoFromOptions() async throws {
+        let repo = try await FixtureRepo()
         try repo.write("a.txt", "a\n")
-        _ = try repo.commit("one")
+        _ = try await repo.commit("one")
         var options = Options()
         options.repo = repo.path
         options.base = "main"
-        let cfg = try App.configure(options)
+        let cfg = try await App.configure(options)
         #expect(cfg.repo == Paths.resolve(repo.path))
         #expect(cfg.base == "main")
         #expect(cfg.stateRoot == Paths.join(Paths.resolve(repo.path), ".gandalf"))
         options.stateDir = Paths.join(repo.path, "custom")
-        #expect(try App.configure(options).skipPrefixes == ["custom"])
+        #expect(try await App.configure(options).skipPrefixes == ["custom"])
         options.repo = Paths.join(repo.path, "nope")
-        #expect(throws: ExitError.self) { try App.configure(options) }
+        await #expect(throws: ExitError.self) { try await App.configure(options) }
     }
 }

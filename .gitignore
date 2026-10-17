@@ -4,3 +4,4 @@
 xcuserdata/
 release/
 release-identity.json
+.swiftpm/

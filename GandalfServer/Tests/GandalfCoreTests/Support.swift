@@ -52,17 +52,17 @@ final class FixtureRepo {
     let dir: TempDir
     var path: String { dir.path }
 
-    init() throws {
+    init() async throws {
         dir = try TempDir(prefix: "gandalf-repo-")
-        try git(["init", "-q", "-b", "main"])
-        try git(["config", "user.email", "t@example.com"])
-        try git(["config", "user.name", "Test"])
-        try git(["config", "commit.gpgsign", "false"])
+        try await git(["init", "-q", "-b", "main"])
+        try await git(["config", "user.email", "t@example.com"])
+        try await git(["config", "user.name", "Test"])
+        try await git(["config", "commit.gpgsign", "false"])
     }
 
     @discardableResult
-    func git(_ args: [String]) throws -> String {
-        try Git.runText(path, args, env: [
+    func git(_ args: [String]) async throws -> String {
+        try await Git.runText(path, args, env: [
             "GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z",
             "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
         ])
@@ -72,10 +72,10 @@ final class FixtureRepo {
         try dir.write(rel, text)
     }
 
-    func commit(_ message: String, paths: [String]? = nil) throws -> String {
-        try git(paths.map { ["add", "--"] + $0 } ?? ["add", "-A"])
-        try git(["commit", "-q", "-m", message] + (paths.map { ["--only", "--"] + $0 } ?? []))
-        return try git(["rev-parse", "HEAD"]).trimmed
+    func commit(_ message: String, paths: [String]? = nil) async throws -> String {
+        try await git(paths.map { ["add", "--"] + $0 } ?? ["add", "-A"])
+        try await git(["commit", "-q", "-m", message] + (paths.map { ["--only", "--"] + $0 } ?? []))
+        return try await git(["rev-parse", "HEAD"]).trimmed
     }
 
     func config(base: String = "HEAD") -> ReviewConfig {
@@ -87,16 +87,16 @@ final class FixtureRepo {
 }
 
 extension Router {
-    func get(_ uri: String, headers: [String: String] = [:]) -> Response {
+    func get(_ uri: String, headers: [String: String] = [:]) async -> Response {
         var h = ["host": "127.0.0.1:4633"]
         for (k, v) in headers { h[k] = v }
-        return handle(Request(method: "GET", uri: uri, headers: h))
+        return await handle(Request(method: "GET", uri: uri, headers: h))
     }
 
-    func post(_ uri: String, _ body: JSON, headers: [String: String] = [:]) -> Response {
+    func post(_ uri: String, _ body: JSON, headers: [String: String] = [:]) async -> Response {
         var h = ["host": "127.0.0.1:4633"]
         for (k, v) in headers { h[k] = v }
-        return handle(Request(method: "POST", uri: uri, headers: h, body: Data(body.serialized().utf8)))
+        return await handle(Request(method: "POST", uri: uri, headers: h, body: Data(body.serialized().utf8)))
     }
 }
 

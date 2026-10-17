@@ -3,7 +3,7 @@ import Foundation
 import GandalfCore
 
 @main
-struct Gandalf: ParsableCommand {
+struct Gandalf: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "gandalf",
         abstract: "Gandalf — local review UI",
@@ -28,7 +28,7 @@ struct Gandalf: ParsableCommand {
     @Flag(help: "log every request and git call to stderr, not just problems")
     var verbose = false
 
-    func run() throws {
+    func run() async throws {
         var options = Options()
         options.repo = repo
         options.base = base
@@ -37,7 +37,7 @@ struct Gandalf: ParsableCommand {
         options.noOpen = noOpen
         options.verbose = verbose
         do {
-            try App.run(options)
+            try await App.run(options)
         } catch let e as ExitError {
             FileHandle.standardError.write(Data((e.description + "\n").utf8))
             throw ExitCode(e.code)

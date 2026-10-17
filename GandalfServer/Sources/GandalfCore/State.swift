@@ -3,10 +3,10 @@ import Foundation
 // Branch-scoped state under <repo>/.gandalf/
 
 public enum State {
-    public static func currentBranch(_ repo: String) throws -> String {
-        let name = try Git.runText(repo, ["rev-parse", "--abbrev-ref", "HEAD"]).trimmed
+    public static func currentBranch(_ repo: String) async throws -> String {
+        let name = try await Git.runText(repo, ["rev-parse", "--abbrev-ref", "HEAD"]).trimmed
         if name == "HEAD" {  // detached
-            let sha = try Git.runText(repo, ["rev-parse", "--short", "HEAD"]).trimmed
+            let sha = try await Git.runText(repo, ["rev-parse", "--short", "HEAD"]).trimmed
             return "detached-\(sha)"
         }
         return name

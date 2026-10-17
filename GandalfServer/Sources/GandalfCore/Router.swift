@@ -82,12 +82,12 @@ public final class Router: Sendable {
 
     // MARK: - Entry point
 
-    public func handle(_ req: Request) -> Response {
+    public func handle(_ req: Request) async -> Response {
         if let denied = guardLocal(req) { return denied }
         do {
             switch req.method {
-            case "GET": return try get(req)
-            case "POST": return try post(req)
+            case "GET": return try await get(req)
+            case "POST": return try await post(req)
             default: return .error("unsupported method", status: 501)
             }
         } catch let e as GitError {
@@ -165,25 +165,25 @@ public final class Router: Sendable {
 
     // MARK: - Routes
 
-    private func get(_ req: Request) throws -> Response {
+    private func get(_ req: Request) async throws -> Response {
         switch req.path {
         case "/": return serveStatic("index.html")
-        case "/api/review": return try apiReview(req)
-        case "/api/status": return try apiStatus(req)
-        case "/api/file": return try apiFile(req)
-        case "/api/revision": return try apiRevision(req, markdown: false)
-        case "/api/revision-md": return try apiRevision(req, markdown: true)
+        case "/api/review": return try await apiReview(req)
+        case "/api/status": return try await apiStatus(req)
+        case "/api/file": return try await apiFile(req)
+        case "/api/revision": return try await apiRevision(req, markdown: false)
+        case "/api/revision-md": return try await apiRevision(req, markdown: true)
         default: return serveStatic(String(req.path.dropFirst()))
         }
     }
 
-    private func post(_ req: Request) throws -> Response {
+    private func post(_ req: Request) async throws -> Response {
         switch req.path {
-        case "/api/drafts": return try apiDrafts(req)
-        case "/api/submit": return try apiSubmit(req)
-        case "/api/stage": return try apiStage(req)
-        case "/api/viewed": return try apiViewed(req)
-        case "/api/reset-history": return try apiResetHistory(req)
+        case "/api/drafts": return try await apiDrafts(req)
+        case "/api/submit": return try await apiSubmit(req)
+        case "/api/stage": return try await apiStage(req)
+        case "/api/viewed": return try await apiViewed(req)
+        case "/api/reset-history": return try await apiResetHistory(req)
         default: return .error("not found", status: 404)
         }
     }
@@ -201,11 +201,11 @@ public final class Router: Sendable {
 
     /// --base as a commit: its merge-base with HEAD, so a branch name reviews
     /// what this branch changed (GitHub's `base...HEAD`).
-    private func defaultBase() throws -> String {
-        if let sha = try? Git.runText(repo, ["merge-base", cfg.base, "HEAD"]) {
+    private func defaultBase() async throws -> String {
+        if let sha = try? await Git.runText(repo, ["merge-base", cfg.base, "HEAD"]) {
             return sha.trimmed
         }
-        guard let sha = Git.revParse(repo, cfg.base) else {
+        guard let sha = await Git.revParse(repo, cfg.base) else {
             throw GitError("unknown base ref '\(cfg.base)'")
         }
         return sha
@@ -240,7 +240,7 @@ public final class Router: Sendable {
     /// point -> working tree). Without any, --base -> working tree.
     private func collectView(
         _ params: ViewParams, revisions: [JSON], defaultBase: String, ignoreWs: Bool, raws: Raws? = nil
-    ) throws -> ([DiffFile], View) {
+    ) async throws -> ([DiffFile], View) {
         if let since = params.since {
             guard let rev = revisions.first(where: { $0["revision"].intValue == since }),
                   let tree = rev["tree"].stringValue, !tree.isEmpty
@@ -249,25 +249,25 @@ public final class Router: Sendable {
             }
             let files: [DiffFile]
             do {
-                files = try Review.collectReviewSince(cfg, tree: tree, ignoreWs: ignoreWs)
+                files = try await Review.collectReviewSince(cfg, tree: tree, ignoreWs: ignoreWs)
             } catch let e as GitError {
                 throw ViewError("snapshot for review r\(since) is unreadable (\(e))")
             }
             return (files, .since(revision: since))
         }
         if let commit = params.commit {
-            guard Git.isSha(commit), let info = Review.commitInfo(cfg, commit) else {
+            guard Git.isSha(commit), let info = await Review.commitInfo(cfg, commit) else {
                 throw ViewError("no such commit \(commit)")
             }
             return (
-                try Review.collectCommit(cfg, info.sha, ignoreWs: ignoreWs),
+                try await Review.collectCommit(cfg, info.sha, ignoreWs: ignoreWs),
                 .commit(sha: info.sha, short: info.short, subject: info.subject)
             )
         }
         var viewBase = defaultBase
         var sinceBranch: String?
         if params.all {
-            guard let point = Review.branchPoint(cfg) else {
+            guard let point = await Review.branchPoint(cfg) else {
                 throw ViewError("no default branch to diff against")
             }
             // On the default branch, that is just the default view.
@@ -276,12 +276,13 @@ public final class Router: Sendable {
                 sinceBranch = point.name
             }
         }
-        var (files, _) = try Review.collectReview(
+        var (files, _) = try await Review.collectReview(
             cfg, base: viewBase, raws: viewBase == defaultBase ? raws : nil, ignoreWs: ignoreWs
         )
         // Staging works on the index, so its badges and hunk patches only
         // make sense when the diff is relative to HEAD.
-        if viewBase != Git.revParse(repo, "HEAD") {
+        let head = await Git.revParse(repo, "HEAD")
+        if viewBase != head {
             for i in files.indices {
                 files[i].stagedState = nil
                 for h in files[i].hunks.indices {
@@ -292,19 +293,19 @@ public final class Router: Sendable {
         return (files, .base(base: viewBase, all: sinceBranch))
     }
 
-    private func apiReview(_ req: Request) throws -> Response {
-        let branch = try State.currentBranch(repo)
+    private func apiReview(_ req: Request) async throws -> Response {
+        let branch = try await State.currentBranch(repo)
         let ignoreWs = req.queryValue("ws") == "1"
         let params = ViewParams(req)
         let revisions = stateLock.withLock {
             State.read(stateRoot, branch)["revisions"]?.arrayValue ?? []
         }
-        let defaultBase = try defaultBase()
-        let raws = try Review.gatherRaws(cfg, base: defaultBase, ignoreWs: ignoreWs)
+        let defaultBase = try await defaultBase()
+        let raws = try await Review.gatherRaws(cfg, base: defaultBase, ignoreWs: ignoreWs)
         let files: [DiffFile]
         let view: View
         do {
-            (files, view) = try collectView(
+            (files, view) = try await collectView(
                 params, revisions: revisions, defaultBase: defaultBase, ignoreWs: ignoreWs, raws: raws
             )
         } catch let e as ViewError {
@@ -338,12 +339,20 @@ public final class Router: Sendable {
         }
         let reviewedHead = revisions.reversed().first { $0["headSha"].stringValue != nil }?["headSha"].stringValue
         let pinned = Set(drafts.compactMap { Git.isSha($0["commit"]) ? $0["commit"].stringValue : nil })
-        let point = Review.branchPoint(cfg)
+        let point = await Review.branchPoint(cfg)
+        let head = await Git.revParse(repo, "HEAD")
         // "All changes" only means something off the default branch, and
         // when it isn't what the default view already shows.
         var allChanges: String?
-        if let point, point.sha != Git.revParse(repo, "HEAD"), point.sha != defaultBase {
+        if let point, point.sha != head, point.sha != defaultBase {
             allChanges = point.name
+        }
+        let commits = await Review.listCommits(
+            cfg, point: point?.sha, reviewedHead: reviewedHead
+        )
+        var lostCommits: [JSON] = []
+        for sha in pinned.sorted() where !(await Git.isAncestor(repo, sha)) {
+            lostCommits.append(.string(sha))
         }
         var fingerprint: JSON = .string(raws.fingerprint)
         if case .commit = view {
@@ -360,21 +369,21 @@ public final class Router: Sendable {
             "files": .array(filesJSON),
             "drafts": .array(drafts),
             "revisions": state["revisions"] ?? .array([]),
-            "commits": .array(Review.listCommits(cfg, point: point?.sha, reviewedHead: reviewedHead)),
+            "commits": .array(commits),
             "allChanges": allChanges.map { .string($0) } ?? .null,
-            "lostCommits": .array(pinned.filter { !Git.isAncestor(repo, $0) }.sorted().map { .string($0) }),
+            "lostCommits": .array(lostCommits),
         ]))
     }
 
-    private func apiStatus(_ req: Request) throws -> Response {
+    private func apiStatus(_ req: Request) async throws -> Response {
         // Same ?ws= the review was fetched with, so fingerprints compare.
         let ignoreWs = req.queryValue("ws") == "1"
-        let raws = try Review.gatherRaws(cfg, base: try defaultBase(), ignoreWs: ignoreWs)
+        let raws = try await Review.gatherRaws(cfg, base: try await defaultBase(), ignoreWs: ignoreWs)
         return .json(.object(["fingerprint": .string(raws.fingerprint), "head": .string(raws.head)]))
     }
 
     /// A file's lines in the working tree, or at ?rev= (a commit view).
-    private func apiFile(_ req: Request) throws -> Response {
+    private func apiFile(_ req: Request) async throws -> Response {
         let rel = req.queryValue("path")
         if rel.isEmpty {
             return .error("missing ?path=", status: 400)
@@ -383,7 +392,7 @@ public final class Router: Sendable {
         if !rev.isEmpty, !Git.isSha(rev) {
             return .error("bad ?rev=", status: 400)
         }
-        guard let data = try Review.fileBytes(cfg, rel: rel, rev: rev.isEmpty ? nil : rev) else {
+        guard let data = try await Review.fileBytes(cfg, rel: rel, rev: rev.isEmpty ? nil : rev) else {
             return .error("file missing or too large for context expansion", status: 404)
         }
         return .json(.object([
@@ -392,11 +401,11 @@ public final class Router: Sendable {
         ]))
     }
 
-    private func apiRevision(_ req: Request, markdown: Bool) throws -> Response {
+    private func apiRevision(_ req: Request, markdown: Bool) async throws -> Response {
         guard let number = Int(req.queryValue("n")), number >= 0 else {
             return .error("missing ?n=", status: 400)
         }
-        let branch = try State.currentBranch(repo)
+        let branch = try await State.currentBranch(repo)
         let p = Paths.join(Paths.join(State.branchDir(stateRoot, branch), "revisions"), "\(number).json")
         guard Paths.isFile(p) else {
             return .error("no such revision", status: 404)
@@ -406,12 +415,12 @@ public final class Router: Sendable {
         return .json(.object(["markdown": .string(Markdown.render(snap))]))
     }
 
-    private func apiDrafts(_ req: Request) throws -> Response {
+    private func apiDrafts(_ req: Request) async throws -> Response {
         let payload = try bodyJSON(req)
         guard let drafts = payload["drafts"].arrayValue else {
             return .error("expected {drafts: [...]}", status: 400)
         }
-        let branch = try State.currentBranch(repo)
+        let branch = try await State.currentBranch(repo)
         try stateLock.withLock {
             var state = State.read(stateRoot, branch)
             state["drafts"] = .array(drafts)
@@ -420,14 +429,14 @@ public final class Router: Sendable {
         return .json(.object(["ok": .bool(true), "count": .int(drafts.count)]))
     }
 
-    private func apiViewed(_ req: Request) throws -> Response {
+    private func apiViewed(_ req: Request) async throws -> Response {
         let payload = try bodyJSON(req)
         guard let path = payload["path"].stringValue, let sig = payload["sig"].stringValue,
               let viewed = payload["viewed"].boolValue
         else {
             return .error("expected {path, sig, viewed}", status: 400)
         }
-        let branch = try State.currentBranch(repo)
+        let branch = try await State.currentBranch(repo)
         try stateLock.withLock {
             var state = State.read(stateRoot, branch)
             var viewedMap = state["viewed"]?.objectValue ?? [:]
@@ -438,12 +447,12 @@ public final class Router: Sendable {
         return .json(.object(["ok": .bool(true)]))
     }
 
-    private func apiResetHistory(_ req: Request) throws -> Response {
+    private func apiResetHistory(_ req: Request) async throws -> Response {
         let payload = try bodyJSON(req)
         guard let scope = payload["scope"].stringValue, scope == "branch" || scope == "all" else {
             return .error("expected {scope: \"branch\"|\"all\"}", status: 400)
         }
-        let branch = try State.currentBranch(repo)
+        let branch = try await State.currentBranch(repo)
         let stats = try stateLock.withLock {
             try State.wipeHistory(stateRoot, branch, allBranches: scope == "all")
         }
@@ -452,16 +461,16 @@ public final class Router: Sendable {
         ]))
     }
 
-    private func apiSubmit(_ req: Request) throws -> Response {
+    private func apiSubmit(_ req: Request) async throws -> Response {
         let payload = try bodyJSON(req)
         // An empty list is a valid review: it approves the changes.
         guard let comments = payload["comments"].arrayValue else {
             return .error("expected {comments: [...]}", status: 400)
         }
-        let branch = try State.currentBranch(repo)
+        let branch = try await State.currentBranch(repo)
         let ignoreWs = payload["ignoreWs"].isTrue
         let viewParams = ViewParams(payload["view"])
-        let defaultBase = try defaultBase()
+        let defaultBase = try await defaultBase()
         let revisions = stateLock.withLock {
             State.read(stateRoot, branch)["revisions"]?.arrayValue ?? []
         }
@@ -470,28 +479,29 @@ public final class Router: Sendable {
         var files: [DiffFile]
         var view: View
         do {
-            (files, view) = try collectView(
+            (files, view) = try await collectView(
                 viewParams, revisions: revisions, defaultBase: defaultBase, ignoreWs: ignoreWs
             )
         } catch is ViewError {
-            (files, view) = try collectView(
+            (files, view) = try await collectView(
                 ViewParams(), revisions: revisions, defaultBase: defaultBase, ignoreWs: ignoreWs
             )
         }
         // The checkpoint the next "since" view diffs against.
-        let tree = try Review.snapshotTree(cfg)
-        let headSha = Git.revParse(repo, "HEAD")
-        let head = try Git.runText(repo, ["rev-parse", "--short", "HEAD"]).trimmed
+        let tree = try await Review.snapshotTree(cfg)
+        let headSha = await Git.revParse(repo, "HEAD")
+        let head = try await Git.runText(repo, ["rev-parse", "--short", "HEAD"]).trimmed
         var commits: [String: JSON] = [:]
         for c in comments {
             guard Git.isSha(c["commit"]), let sha = c["commit"].stringValue, commits[sha] == nil else { continue }
-            let info = Review.commitInfo(cfg, sha)
+            let info = await Review.commitInfo(cfg, sha)
+            let gone = !(await Git.isAncestor(repo, sha))
             commits[sha] = .object([
                 "sha": .string(sha),
                 "short": .string(info?.short ?? String(sha.prefix(7))),
                 "subject": .string(info?.subject ?? ""),
                 "time": .int(info?.time ?? 0),
-                "gone": .bool(!Git.isAncestor(repo, sha)),
+                "gone": .bool(gone),
             ])
         }
         let submittedAt = State.nowISO()
@@ -548,7 +558,7 @@ public final class Router: Sendable {
 
     /// Stage/unstage a whole file or a single hunk. Requires a writable
     /// .git; failures (e.g. read-only mounts) surface as error toasts.
-    private func apiStage(_ req: Request) throws -> Response {
+    private func apiStage(_ req: Request) async throws -> Response {
         let payload = try bodyJSON(req)
         let action = payload["action"].stringValue
         guard let rel = payload["path"].stringValue, !rel.isEmpty else {
@@ -562,9 +572,9 @@ public final class Router: Sendable {
         }
         switch action {
         case "stage-file":
-            try Git.run(repo, ["add", "--"] + paths)
+            try await Git.run(repo, ["add", "--"] + paths)
         case "unstage-file":
-            try Git.run(repo, ["reset", "-q", "HEAD", "--"] + paths)
+            try await Git.run(repo, ["reset", "-q", "HEAD", "--"] + paths)
         case "stage-hunk", "unstage-hunk":
             guard let hunk = payload["hunk"].objectValue else {
                 return .error("missing hunk", status: 400)
@@ -574,7 +584,7 @@ public final class Router: Sendable {
                 args.append("--reverse")
             }
             args.append("-")
-            try Git.run(repo, args, input: try Drafts.hunkPatch(path: rel, hunk: .object(hunk)))
+            try await Git.run(repo, args, input: try Drafts.hunkPatch(path: rel, hunk: .object(hunk)))
         default:
             return .error("unknown action", status: 400)
         }

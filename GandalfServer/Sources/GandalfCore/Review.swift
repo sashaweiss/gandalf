@@ -50,23 +50,23 @@ public enum Review {
     /// Run the (read-only) git commands once and derive a change fingerprint.
     /// The fingerprint is view-scoped: with ignoreWs, whitespace-only edits
     /// neither show nor count as staleness — the rendered view is unchanged.
-    public static func gatherRaws(_ cfg: ReviewConfig, base: String, ignoreWs: Bool) throws -> Raws {
+    public static func gatherRaws(_ cfg: ReviewConfig, base: String, ignoreWs: Bool) async throws -> Raws {
         let repo = cfg.repo
         let ws = ignoreWs ? ["-w"] : []
-        let raw = try Git.runText(
+        let raw = try await Git.runText(
             repo, ["diff", "--no-color", "--find-renames", "-U3"] + ws + [base, "--", "."] + cfg.excludes
         )
-        let cachedRaw = try Git.runText(
+        let cachedRaw = try await Git.runText(
             repo, ["diff", "--cached", "--no-color", "--find-renames"] + ws + [base, "--", "."] + cfg.excludes
         )
         let unstagedNames = Set(
-            try Git.run(repo, ["diff", "--name-only", "-z"]).decodedLossy
+            try await Git.run(repo, ["diff", "--name-only", "-z"]).decodedLossy
                 .split(separator: "\0").map(String.init)
         )
-        let untracked = try Git.run(repo, ["ls-files", "--others", "--exclude-standard", "-z"])
+        let untracked = try await Git.run(repo, ["ls-files", "--others", "--exclude-standard", "-z"])
             .decodedLossy.split(separator: "\0").map(String.init)
             .filter { !Diff.skipUntracked($0, skipPrefixes: cfg.skipPrefixes) }
-        let head = try Git.runText(repo, ["rev-parse", "--short", "HEAD"]).trimmed
+        let head = try await Git.runText(repo, ["rev-parse", "--short", "HEAD"]).trimmed
         var fp = SHA256()
         for part in [raw, untracked.joined(separator: "\0"), cachedRaw, head] {
             fp.update(string: part)
@@ -81,8 +81,12 @@ public enum Review {
 
     public static func collectReview(
         _ cfg: ReviewConfig, base: String, raws: Raws? = nil, ignoreWs: Bool
-    ) throws -> ([DiffFile], Raws) {
-        let raws = try raws ?? gatherRaws(cfg, base: base, ignoreWs: ignoreWs)
+    ) async throws -> ([DiffFile], Raws) {
+        let raws = if let raws {
+            raws
+        } else {
+            try await gatherRaws(cfg, base: base, ignoreWs: ignoreWs)
+        }
         var files = Diff.parseUnifiedDiff(raws.raw)
         for rel in raws.untracked {
             if let f = Diff.synthesizeUntracked(repo: cfg.repo, rel: rel) {
@@ -118,29 +122,35 @@ public enum Review {
             }
         }
 
-        finalizeFiles(cfg, &files)
+        await finalizeFiles(cfg, &files)
         return (files, raws)
     }
 
     /// A file's contents in the working tree (rev nil) or at a commit; nil
     /// when it doesn't exist there or is over maxFileBytes.
-    public static func fileBytes(_ cfg: ReviewConfig, rel: String, rev: String? = nil) throws -> Data? {
+    public static func fileBytes(_ cfg: ReviewConfig, rel: String, rev: String? = nil) async throws -> Data? {
         guard let rev else {
-            let p = try safeRepoPath(cfg.repo, rel)
-            guard Paths.isFile(p), let st = Paths.fileStat(p), st.size <= maxFileBytes else { return nil }
-            return try Paths.readData(p)
+            return try worktreeBytes(cfg, rel: rel)
         }
         let spec = "\(rev):\(rel)"
-        guard let sizeText = try? Git.runText(cfg.repo, ["cat-file", "-s", spec]),
+        guard let sizeText = try? await Git.runText(cfg.repo, ["cat-file", "-s", spec]),
               let size = Int(sizeText.trimmed), size <= maxFileBytes,
-              let data = try? Git.run(cfg.repo, ["cat-file", "blob", spec])
+              let data = try? await Git.run(cfg.repo, ["cat-file", "blob", spec])
         else { return nil }
         return data
     }
 
+    /// A file's contents in the working tree; nil when it doesn't exist or
+    /// is over maxFileBytes. Synchronous, so it can run under the state lock.
+    public static func worktreeBytes(_ cfg: ReviewConfig, rel: String) throws -> Data? {
+        let p = try safeRepoPath(cfg.repo, rel)
+        guard Paths.isFile(p), let st = Paths.fileStat(p), st.size <= maxFileBytes else { return nil }
+        return try Paths.readData(p)
+    }
+
     /// `rev` names the commit a commit view's new side comes from; nil means
     /// the working tree.
-    public static func finalizeFiles(_ cfg: ReviewConfig, _ files: inout [DiffFile], rev: String? = nil) {
+    public static func finalizeFiles(_ cfg: ReviewConfig, _ files: inout [DiffFile], rev: String? = nil) async {
         // Per-file content signature, used to persist "viewed" checkmarks: a
         // file stays viewed only while its diff is byte-identical to when it
         // was marked. Binary diffs carry no hunk content, so fall back to
@@ -168,7 +178,7 @@ public enum Review {
         for idx in files.indices {
             let f = files[idx]
             if f.status == "deleted" || f.binary || f.newTotal != nil { continue }
-            let data = try? fileBytes(cfg, rel: f.path ?? "", rev: rev)
+            let data = try? await fileBytes(cfg, rel: f.path ?? "", rev: rev)
             if let data {
                 files[idx].newTotal = Diff.countLines(data)
             }
@@ -185,10 +195,10 @@ public enum Review {
     // then a plain tree-to-tree `git diff`, unaffected by commits, rebases or
     // a moving base.
 
-    public static func snapshotEnv(_ cfg: ReviewConfig) throws -> [String: String] {
+    public static func snapshotEnv(_ cfg: ReviewConfig) async throws -> [String: String] {
         let objects = Paths.join(cfg.stateRoot, "objects")
         try Paths.mkdirs(objects)
-        let repoObjects = try Git.runText(cfg.repo, ["rev-parse", "--git-path", "objects"]).trimmed
+        let repoObjects = try await Git.runText(cfg.repo, ["rev-parse", "--git-path", "objects"]).trimmed
         return [
             "GIT_OBJECT_DIRECTORY": objects,
             "GIT_ALTERNATE_OBJECT_DIRECTORIES": Paths.resolve(Paths.join(cfg.repo, repoObjects)),
@@ -197,57 +207,57 @@ public enum Review {
 
     /// Tree object for the working tree as it is now (tracked + untracked,
     /// minus ignored files and gandalf's own state at `statePaths`).
-    public static func snapshotTree(_ cfg: ReviewConfig) throws -> String {
-        var env = try snapshotEnv(cfg)
+    public static func snapshotTree(_ cfg: ReviewConfig) async throws -> String {
+        var env = try await snapshotEnv(cfg)
         let td = try Paths.temporaryDirectory(prefix: "gandalf-index-")
         defer { Paths.removeTree(td) }
         env["GIT_INDEX_FILE"] = Paths.join(td, "index")
         // Starting from a copy of the repo's index lets `add` trust its stat
         // cache and hash only what changed.
         let real = Paths.join(
-            cfg.repo, try Git.runText(cfg.repo, ["rev-parse", "--git-path", "index"]).trimmed
+            cfg.repo, try await Git.runText(cfg.repo, ["rev-parse", "--git-path", "index"]).trimmed
         )
         if Paths.isFile(real) {
             try Paths.readData(real).write(to: URL(fileURLWithPath: env["GIT_INDEX_FILE"]!))
         } else {
-            try Git.run(cfg.repo, ["read-tree", "HEAD"], env: env)
+            try await Git.run(cfg.repo, ["read-tree", "HEAD"], env: env)
         }
         // Not an exclude pathspec: `add` rejects one naming an ignored path,
         // and the state dir is usually gitignored.
-        try Git.run(cfg.repo, ["add", "-A"], env: env)
-        try Git.run(
+        try await Git.run(cfg.repo, ["add", "-A"], env: env)
+        try await Git.run(
             cfg.repo, ["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--"] + cfg.statePaths, env: env
         )
-        return try Git.runText(cfg.repo, ["write-tree"], env: env).trimmed
+        return try await Git.runText(cfg.repo, ["write-tree"], env: env).trimmed
     }
 
     public static func diffRevs(
         _ cfg: ReviewConfig, _ a: String, _ b: String, ignoreWs: Bool, env: [String: String]? = nil
-    ) throws -> [DiffFile] {
+    ) async throws -> [DiffFile] {
         let ws = ignoreWs ? ["-w"] : []
-        let raw = try Git.runText(
+        let raw = try await Git.runText(
             cfg.repo, ["diff", "--no-color", "--find-renames", "-U3"] + ws + [a, b, "--"], env: env
         )
         return Diff.parseUnifiedDiff(raw)
     }
 
     /// What changed between review snapshot `tree` and the working tree.
-    public static func collectReviewSince(_ cfg: ReviewConfig, tree: String, ignoreWs: Bool) throws -> [DiffFile] {
-        let now = try snapshotTree(cfg)
-        var files = try diffRevs(cfg, tree, now, ignoreWs: ignoreWs, env: try snapshotEnv(cfg))
-        finalizeFiles(cfg, &files)
+    public static func collectReviewSince(_ cfg: ReviewConfig, tree: String, ignoreWs: Bool) async throws -> [DiffFile] {
+        let now = try await snapshotTree(cfg)
+        var files = try await diffRevs(cfg, tree, now, ignoreWs: ignoreWs, env: try await snapshotEnv(cfg))
+        await finalizeFiles(cfg, &files)
         return files
     }
 
     /// First parent, or the empty tree for a root commit.
-    public static func commitParent(_ cfg: ReviewConfig, _ sha: String) throws -> String {
-        if let parent = Git.revParse(cfg.repo, "\(sha)^") { return parent }
-        return try Git.runText(cfg.repo, ["hash-object", "-t", "tree", "--stdin"]).trimmed
+    public static func commitParent(_ cfg: ReviewConfig, _ sha: String) async throws -> String {
+        if let parent = await Git.revParse(cfg.repo, "\(sha)^") { return parent }
+        return try await Git.runText(cfg.repo, ["hash-object", "-t", "tree", "--stdin"]).trimmed
     }
 
-    public static func collectCommit(_ cfg: ReviewConfig, _ sha: String, ignoreWs: Bool) throws -> [DiffFile] {
-        var files = try diffRevs(cfg, try commitParent(cfg, sha), sha, ignoreWs: ignoreWs)
-        finalizeFiles(cfg, &files, rev: sha)
+    public static func collectCommit(_ cfg: ReviewConfig, _ sha: String, ignoreWs: Bool) async throws -> [DiffFile] {
+        var files = try await diffRevs(cfg, try await commitParent(cfg, sha), sha, ignoreWs: ignoreWs)
+        await finalizeFiles(cfg, &files, rev: sha)
         return files
     }
 
@@ -259,8 +269,8 @@ public enum Review {
     }
 
     /// {sha, short, subject, time} for a commit object, or nil.
-    public static func commitInfo(_ cfg: ReviewConfig, _ sha: String) -> CommitInfo? {
-        guard let out = try? Git.runText(cfg.repo, ["log", "-1", "--format=%H%x00%s%x00%ct", sha, "--"])
+    public static func commitInfo(_ cfg: ReviewConfig, _ sha: String) async -> CommitInfo? {
+        guard let out = try? await Git.runText(cfg.repo, ["log", "-1", "--format=%H%x00%s%x00%ct", sha, "--"])
         else { return nil }
         let parts = out.trimmingTrailingWhitespace.split(separator: "\0", omittingEmptySubsequences: false)
         guard parts.count >= 3 else { return nil }
@@ -271,11 +281,11 @@ public enum Review {
     /// (sha, name): HEAD's merge-base with the default branch (HEAD itself
     /// when on it) and that branch's short name; nil when there is no
     /// default branch to compare with.
-    public static func branchPoint(_ cfg: ReviewConfig) -> (sha: String, name: String)? {
+    public static func branchPoint(_ cfg: ReviewConfig) async -> (sha: String, name: String)? {
         for ref in ["refs/remotes/origin/HEAD", "refs/heads/main", "refs/heads/master"] {
-            guard let tip = Git.revParse(cfg.repo, ref) else { continue }
-            guard let sha = try? Git.runText(cfg.repo, ["merge-base", tip, "HEAD"]).trimmed,
-                  let name = try? Git.runText(cfg.repo, ["rev-parse", "--abbrev-ref", ref]).trimmed
+            guard let tip = await Git.revParse(cfg.repo, ref) else { continue }
+            guard let sha = try? await Git.runText(cfg.repo, ["merge-base", tip, "HEAD"]).trimmed,
+                  let name = try? await Git.runText(cfg.repo, ["rev-parse", "--abbrev-ref", ref]).trimmed
             else { return nil }
             return (sha, name)
         }
@@ -288,14 +298,14 @@ public enum Review {
     /// `reviewedHead`.
     public static func listCommits(
         _ cfg: ReviewConfig, point: String?, reviewedHead: String?, limit: Int = 100
-    ) -> [JSON] {
-        guard let out = try? Git.runText(cfg.repo, [
+    ) async -> [JSON] {
+        guard let out = try? await Git.runText(cfg.repo, [
             "log", "--first-parent", "-n\(limit)", "--format=%H%x00%s",
             point.map { "\($0)..HEAD" } ?? "HEAD", "--",
         ]) else { return [] }  // unborn branch
         var new = Set<String>()
         if let reviewedHead,
-           let text = try? Git.runText(cfg.repo, ["rev-list", "HEAD", "^\(reviewedHead)", "--"]) {
+           let text = try? await Git.runText(cfg.repo, ["rev-list", "HEAD", "^\(reviewedHead)", "--"]) {
             new = Set(text.split(whereSeparator: { $0.isWhitespace }).map(String.init))
         }
         return out.outputLines.map { line in
@@ -323,7 +333,7 @@ public enum Review {
     }
 
     public static func readWorktreeLines(_ cfg: ReviewConfig, rel: String) throws -> [String]? {
-        guard let data = try fileBytes(cfg, rel: rel) else { return nil }
+        guard let data = try worktreeBytes(cfg, rel: rel) else { return nil }
         return Diff.splitLines(data)
     }
 }
