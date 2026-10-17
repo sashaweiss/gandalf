@@ -114,6 +114,8 @@ public final class Server: Sendable {
                     }
                 }
             }
+        } catch is CancellationError {
+            // shutdown() closing an idle keep-alive connection.
         } catch {
             // Closing without a reply is what a browser reports as an empty
             // response, so say why.

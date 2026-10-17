@@ -1688,9 +1688,11 @@ function wireEvents() {
   $('#btn-submit').addEventListener('click', openFinishDialog);
 
   // Poll the local server for working-tree changes; on drift, show a nudge
-  // rather than yanking the view out from under the reviewer.
-  setInterval(async () => {
-    if (document.hidden || !review || !review.fingerprint) return;
+  // rather than yanking the view out from under the reviewer. Only while
+  // the page has focus (edits happen in another app; there's nothing to see
+  // until the reviewer comes back), plus once on returning.
+  async function checkStale() {
+    if (!review || !review.fingerprint) return;
     const polled = review;
     try {
       const s = await api('/api/status' + (ignoreWs ? '?ws=1' : ''));
@@ -1699,7 +1701,9 @@ function wireEvents() {
       if (review !== polled) return;
       $('#stale').hidden = s.fingerprint === review.fingerprint;
     } catch (_) { /* server briefly unavailable; try again next tick */ }
-  }, 4000);
+  }
+  setInterval(() => { if (document.hasFocus()) checkStale(); }, 4000);
+  window.addEventListener('focus', checkStale);
 }
 
 function setAllCollapsed(v) {
