@@ -19,11 +19,15 @@ test:
 	node tests/test_highlight.js
 	node tests/test_filetree.js
 
+# Set VERBOSE (e.g., `make release VERBOSE=1`) to show each step's output.
+VERBOSE :=
+
 # Extra gandalf-release flags go in ARGS, e.g. `make release ARGS=--dry-run`.
 release:
 	@test -f $(IDENTITY) || { echo "missing $(IDENTITY)" >&2; exit 1; }
-	identity=$$(jq -er .signingIdentity $(IDENTITY)) && \
+	@identity=$$(jq -er .signingIdentity $(IDENTITY)) && \
 	profile=$$(jq -er .notaryProfile $(IDENTITY)) && \
-	swift run --package-path GandalfRelease gandalf-release \
+	swift run $(if $(VERBOSE),,--quiet) --package-path GandalfRelease \
+		gandalf-release $(if $(VERBOSE),--verbose) \
 		--signing-identity "$$identity" --notary-profile "$$profile" \
 		$(ARGS)
