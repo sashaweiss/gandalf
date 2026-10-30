@@ -26,8 +26,11 @@
       <summary title="Settings" aria-label="Settings"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></summary>
       <div class="settings-panel">
         <label for="mono-font-input">Code font</label>
-        <input id="mono-font-input" type="text" placeholder="e.g. Natasha II" spellcheck="false" autocomplete="off">
+        <input id="mono-font-input" type="text" spellcheck="false" autocomplete="off">
         <p class="settings-hint">Used for diffs on this machine. If the font isn't installed, the system monospace is used.</p>
+        <label for="context-input" class="settings-field">Context lines</label>
+        <input id="context-input" type="number" min="0" step="1" inputmode="numeric">
+        <p class="settings-hint">Unchanged lines shown around each change.</p>
         <label class="settings-check"><input type="checkbox" id="ws-toggle"> Ignore whitespace changes</label>
         <p class="settings-hint">Whitespace-only changes are hidden and hunk staging is disabled while on.</p>
         <hr class="settings-sep">

@@ -46,18 +46,35 @@ public struct ReviewConfig: Sendable {
     public var statePaths: [String] { [stateDirName] + skipPrefixes }
 }
 
+/// How diffs are generated: whitespace handling and context lines per hunk.
+public struct DiffOptions: Sendable {
+    public static let defaultContext = 6
+    public static let maxContext = 100
+
+    public var ignoreWs: Bool
+    public var context: Int
+
+    public init(ignoreWs: Bool = false, context: Int = DiffOptions.defaultContext) {
+        self.ignoreWs = ignoreWs
+        self.context = min(max(context, 0), DiffOptions.maxContext)
+    }
+
+    var args: [String] { ["-U\(context)"] + (ignoreWs ? ["-w"] : []) }
+}
+
 public enum Review {
     /// Run the (read-only) git commands once and derive a change fingerprint.
     /// The fingerprint is view-scoped: with ignoreWs, whitespace-only edits
     /// neither show nor count as staleness — the rendered view is unchanged.
-    public static func gatherRaws(_ cfg: ReviewConfig, base: String, ignoreWs: Bool) async throws -> Raws {
+    /// The cached diff uses the same options so hunk signatures line up.
+    public static func gatherRaws(_ cfg: ReviewConfig, base: String, options: DiffOptions) async throws -> Raws {
         let repo = cfg.repo
-        let ws = ignoreWs ? ["-w"] : []
         let raw = try await Git.runText(
-            repo, ["diff", "--no-color", "--find-renames", "-U3"] + ws + [base, "--", "."] + cfg.excludes
+            repo, ["diff", "--no-color", "--find-renames"] + options.args + [base, "--", "."] + cfg.excludes
         )
         let cachedRaw = try await Git.runText(
-            repo, ["diff", "--cached", "--no-color", "--find-renames"] + ws + [base, "--", "."] + cfg.excludes
+            repo, ["diff", "--cached", "--no-color", "--find-renames"] + options.args
+                + [base, "--", "."] + cfg.excludes
         )
         let unstagedNames = Set(
             try await Git.run(repo, ["diff", "--name-only", "-z"]).decodedLossy
@@ -80,12 +97,12 @@ public enum Review {
     }
 
     public static func collectReview(
-        _ cfg: ReviewConfig, base: String, raws: Raws? = nil, ignoreWs: Bool
+        _ cfg: ReviewConfig, base: String, raws: Raws? = nil, options: DiffOptions
     ) async throws -> ([DiffFile], Raws) {
         let raws = if let raws {
             raws
         } else {
-            try await gatherRaws(cfg, base: base, ignoreWs: ignoreWs)
+            try await gatherRaws(cfg, base: base, options: options)
         }
         var files = Diff.parseUnifiedDiff(raws.raw)
         for rel in raws.untracked {
@@ -232,19 +249,18 @@ public enum Review {
     }
 
     public static func diffRevs(
-        _ cfg: ReviewConfig, _ a: String, _ b: String, ignoreWs: Bool, env: [String: String]? = nil
+        _ cfg: ReviewConfig, _ a: String, _ b: String, options: DiffOptions, env: [String: String]? = nil
     ) async throws -> [DiffFile] {
-        let ws = ignoreWs ? ["-w"] : []
         let raw = try await Git.runText(
-            cfg.repo, ["diff", "--no-color", "--find-renames", "-U3"] + ws + [a, b, "--"], env: env
+            cfg.repo, ["diff", "--no-color", "--find-renames"] + options.args + [a, b, "--"], env: env
         )
         return Diff.parseUnifiedDiff(raw)
     }
 
     /// What changed between review snapshot `tree` and the working tree.
-    public static func collectReviewSince(_ cfg: ReviewConfig, tree: String, ignoreWs: Bool) async throws -> [DiffFile] {
+    public static func collectReviewSince(_ cfg: ReviewConfig, tree: String, options: DiffOptions) async throws -> [DiffFile] {
         let now = try await snapshotTree(cfg)
-        var files = try await diffRevs(cfg, tree, now, ignoreWs: ignoreWs, env: try await snapshotEnv(cfg))
+        var files = try await diffRevs(cfg, tree, now, options: options, env: try await snapshotEnv(cfg))
         await finalizeFiles(cfg, &files)
         return files
     }
@@ -255,8 +271,8 @@ public enum Review {
         return try await Git.runText(cfg.repo, ["hash-object", "-t", "tree", "--stdin"]).trimmed
     }
 
-    public static func collectCommit(_ cfg: ReviewConfig, _ sha: String, ignoreWs: Bool) async throws -> [DiffFile] {
-        var files = try await diffRevs(cfg, try await commitParent(cfg, sha), sha, ignoreWs: ignoreWs)
+    public static func collectCommit(_ cfg: ReviewConfig, _ sha: String, options: DiffOptions) async throws -> [DiffFile] {
+        var files = try await diffRevs(cfg, try await commitParent(cfg, sha), sha, options: options)
         await finalizeFiles(cfg, &files, rev: sha)
         return files
     }

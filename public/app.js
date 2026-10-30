@@ -40,7 +40,7 @@ function showError(msg) {
 
 /* ------------------------------------------------------------------ state */
 
-const EXPAND_STEP = 20;
+const EXPAND_STEP = 10;
 
 let review = null; // /api/review payload
 let drafts = [];   // draft comments, mirrored to the server as they change
@@ -78,6 +78,23 @@ const isCommitView = () => !!(review && review.view.kind === 'commit');
 const WS_KEY = 'gandalf.ignoreWs';
 let ignoreWs = false;
 try { ignoreWs = localStorage.getItem(WS_KEY) === '1'; } catch (_) { /* fine */ }
+
+// Context lines around each hunk, per-machine like the code font. Mirrors
+// DiffOptions.defaultContext/maxContext on the server.
+const CONTEXT_KEY = 'gandalf.context';
+const DEFAULT_CONTEXT = 6;
+const MAX_CONTEXT = 100;
+let contextLines = DEFAULT_CONTEXT;
+try {
+  const n = parseInt(localStorage.getItem(CONTEXT_KEY), 10);
+  if (n >= 0 && n <= MAX_CONTEXT) contextLines = n;
+} catch (_) { /* fine */ }
+// Query string carrying the diff options (?ws=, ?ctx=) to the server.
+function diffParams(params = new URLSearchParams()) {
+  if (ignoreWs) params.set('ws', '1');
+  if (contextLines !== DEFAULT_CONTEXT) params.set('ctx', String(contextLines));
+  return params;
+}
 
 // Inline (unified, one column) vs split (side-by-side) diffs — a per-machine
 // display preference like the code font. Below MIN_SPLIT_PX there is no room
@@ -121,8 +138,7 @@ function fetchReview() {
   const params = new URLSearchParams();
   const [kind, arg] = viewKey.split(':');
   if (arg) params.set(kind, arg);
-  if (ignoreWs) params.set('ws', '1');
-  const qs = params.toString();
+  const qs = diffParams(params).toString();
   return api('/api/review' + (qs ? '?' + qs : ''));
 }
 
@@ -1695,7 +1711,8 @@ function wireEvents() {
     if (!review || !review.fingerprint) return;
     const polled = review;
     try {
-      const s = await api('/api/status' + (ignoreWs ? '?ws=1' : ''));
+      const qs = diffParams().toString();
+      const s = await api('/api/status' + (qs ? '?' + qs : ''));
       // A reload (e.g. after staging) can land while this poll is in
       // flight; its answer then describes the old review, not this one.
       if (review !== polled) return;
@@ -1817,7 +1834,8 @@ async function submitReview() {
     await flushDrafts();
     const [kind, arg] = viewKey.split(':');
     const res = await postJson('/api/submit',
-      { comments: drafts, ignoreWs, view: arg ? { [kind]: arg } : {} });
+      { comments: drafts, ignoreWs, context: contextLines,
+        view: arg ? { [kind]: arg } : {} });
     drafts = [];
     openReviewDialog(res.revision, res.markdown);
     // The next loop starts here: switch the view behind the dialog to "what
@@ -1880,6 +1898,22 @@ fontInput.addEventListener('input', () => {
   if (name) localStorage.setItem(MONO_FONT_KEY, name);
   else localStorage.removeItem(MONO_FONT_KEY);
   applyMonoFont(name);
+});
+const contextInput = $('#context-input');
+contextInput.max = String(MAX_CONTEXT);
+contextInput.placeholder = String(DEFAULT_CONTEXT);
+if (contextLines !== DEFAULT_CONTEXT) contextInput.value = String(contextLines);
+contextInput.addEventListener('change', () => {
+  const n = parseInt(contextInput.value, 10);
+  const next = n >= 0 ? Math.min(n, MAX_CONTEXT) : DEFAULT_CONTEXT;
+  contextInput.value = next === DEFAULT_CONTEXT ? '' : String(next);
+  if (next === contextLines) return;
+  contextLines = next;
+  try {
+    if (next === DEFAULT_CONTEXT) localStorage.removeItem(CONTEXT_KEY);
+    else localStorage.setItem(CONTEXT_KEY, String(next));
+  } catch (_) { /* fine */ }
+  load(false);
 });
 const wsToggle = $('#ws-toggle');
 wsToggle.checked = ignoreWs;

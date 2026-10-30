@@ -211,6 +211,14 @@ public final class Router: Sendable {
         return sha
     }
 
+    /// Diff options from `?ws=1` and `?ctx=N`.
+    private func diffOptions(_ req: Request) -> DiffOptions {
+        DiffOptions(
+            ignoreWs: req.queryValue("ws") == "1",
+            context: Int(req.queryValue("ctx")) ?? DiffOptions.defaultContext
+        )
+    }
+
     /// The view a request asks for.
     struct ViewParams {
         var since: Int?
@@ -239,7 +247,7 @@ public final class Router: Sendable {
     /// tree), commit=SHA (one commit vs its parent), or all=1 (the branch
     /// point -> working tree). Without any, --base -> working tree.
     private func collectView(
-        _ params: ViewParams, revisions: [JSON], defaultBase: String, ignoreWs: Bool, raws: Raws? = nil
+        _ params: ViewParams, revisions: [JSON], defaultBase: String, options: DiffOptions, raws: Raws? = nil
     ) async throws -> ([DiffFile], View) {
         if let since = params.since {
             guard let rev = revisions.first(where: { $0["revision"].intValue == since }),
@@ -249,7 +257,7 @@ public final class Router: Sendable {
             }
             let files: [DiffFile]
             do {
-                files = try await Review.collectReviewSince(cfg, tree: tree, ignoreWs: ignoreWs)
+                files = try await Review.collectReviewSince(cfg, tree: tree, options: options)
             } catch let e as GitError {
                 throw ViewError("snapshot for review r\(since) is unreadable (\(e))")
             }
@@ -260,7 +268,7 @@ public final class Router: Sendable {
                 throw ViewError("no such commit \(commit)")
             }
             return (
-                try await Review.collectCommit(cfg, info.sha, ignoreWs: ignoreWs),
+                try await Review.collectCommit(cfg, info.sha, options: options),
                 .commit(sha: info.sha, short: info.short, subject: info.subject)
             )
         }
@@ -277,7 +285,7 @@ public final class Router: Sendable {
             }
         }
         var (files, _) = try await Review.collectReview(
-            cfg, base: viewBase, raws: viewBase == defaultBase ? raws : nil, ignoreWs: ignoreWs
+            cfg, base: viewBase, raws: viewBase == defaultBase ? raws : nil, options: options
         )
         // Staging works on the index, so its badges and hunk patches only
         // make sense when the diff is relative to HEAD.
@@ -295,18 +303,18 @@ public final class Router: Sendable {
 
     private func apiReview(_ req: Request) async throws -> Response {
         let branch = try await State.currentBranch(repo)
-        let ignoreWs = req.queryValue("ws") == "1"
+        let options = diffOptions(req)
         let params = ViewParams(req)
         let revisions = stateLock.withLock {
             State.read(stateRoot, branch)["revisions"]?.arrayValue ?? []
         }
         let defaultBase = try await defaultBase()
-        let raws = try await Review.gatherRaws(cfg, base: defaultBase, ignoreWs: ignoreWs)
+        let raws = try await Review.gatherRaws(cfg, base: defaultBase, options: options)
         let files: [DiffFile]
         let view: View
         do {
             (files, view) = try await collectView(
-                params, revisions: revisions, defaultBase: defaultBase, ignoreWs: ignoreWs, raws: raws
+                params, revisions: revisions, defaultBase: defaultBase, options: options, raws: raws
             )
         } catch let e as ViewError {
             return .error("\(e)", status: 404)
@@ -363,7 +371,7 @@ public final class Router: Sendable {
             "branch": .string(branch),
             "base": .string(cfg.base),
             "view": view.json,
-            "ignoreWhitespace": .bool(ignoreWs),
+            "ignoreWhitespace": .bool(options.ignoreWs),
             "head": .string(raws.head),
             "fingerprint": fingerprint,
             "files": .array(filesJSON),
@@ -376,9 +384,8 @@ public final class Router: Sendable {
     }
 
     private func apiStatus(_ req: Request) async throws -> Response {
-        // Same ?ws= the review was fetched with, so fingerprints compare.
-        let ignoreWs = req.queryValue("ws") == "1"
-        let raws = try await Review.gatherRaws(cfg, base: try await defaultBase(), ignoreWs: ignoreWs)
+        // Same options the review was fetched with, so fingerprints compare.
+        let raws = try await Review.gatherRaws(cfg, base: try await defaultBase(), options: diffOptions(req))
         return .json(.object(["fingerprint": .string(raws.fingerprint), "head": .string(raws.head)]))
     }
 
@@ -468,7 +475,10 @@ public final class Router: Sendable {
             return .error("expected {comments: [...]}", status: 400)
         }
         let branch = try await State.currentBranch(repo)
-        let ignoreWs = payload["ignoreWs"].isTrue
+        let options = DiffOptions(
+            ignoreWs: payload["ignoreWs"].isTrue,
+            context: payload["context"].intValue ?? DiffOptions.defaultContext
+        )
         let viewParams = ViewParams(payload["view"])
         let defaultBase = try await defaultBase()
         let revisions = stateLock.withLock {
@@ -480,11 +490,11 @@ public final class Router: Sendable {
         var view: View
         do {
             (files, view) = try await collectView(
-                viewParams, revisions: revisions, defaultBase: defaultBase, ignoreWs: ignoreWs
+                viewParams, revisions: revisions, defaultBase: defaultBase, options: options
             )
         } catch is ViewError {
             (files, view) = try await collectView(
-                ViewParams(), revisions: revisions, defaultBase: defaultBase, ignoreWs: ignoreWs
+                ViewParams(), revisions: revisions, defaultBase: defaultBase, options: options
             )
         }
         // The checkpoint the next "since" view diffs against.

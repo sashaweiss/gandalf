@@ -298,6 +298,7 @@ button.icon-btn.on { color: var(--accent); border-color: var(--border); }
   padding: 5px 8px;
 }
 .settings-hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+.settings-panel label.settings-field { margin-top: 12px; }
 .settings-sep {
   border: none;
   border-top: 1px solid var(--border-soft);

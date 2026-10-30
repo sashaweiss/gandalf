@@ -118,7 +118,7 @@ import Testing
     @Test func reviewPayloadShape() async throws {
         let (repo, router) = try await makeRepo()
         defer { withExtendedLifetime(repo) {} }
-        let r = await router.get("/api/review")
+        let r = await router.get("/api/review?ctx=3")
         #expect(r.status == 200)
         let o = try #require(r.json.objectValue)
         #expect(o.keys.sorted() == [
@@ -144,10 +144,14 @@ import Testing
         let hunks = byPath["src/main.swift"]!["hunks"].arrayValue!
         #expect(hunks.count == 2)
         #expect(hunks[0]["staged"] == .bool(true) && hunks[1]["staged"] == .bool(false))
+        // The default context is wide enough to merge the two hunks.
+        let wide = await router.get("/api/review").json["files"].arrayValue!
+            .first { $0["path"] == .string("src/main.swift") }!
+        #expect(wide["hunks"].arrayValue!.count == 1)
         #expect(byPath["src/main.swift"]?["viewed"] == .bool(false))
         #expect(byPath["src/main.swift"]?["viewedKey"] == .string("src/main.swift"))
 
-        let status = await router.get("/api/status").json
+        let status = await router.get("/api/status?ctx=3").json
         #expect(status["fingerprint"] == o["fingerprint"])
         #expect(status["head"] == o["head"])
     }
@@ -309,20 +313,20 @@ import Testing
     @Test func stagingRoundTrip() async throws {
         let (repo, router) = try await makeRepo()
         defer { withExtendedLifetime(repo) {} }
-        let before = await router.get("/api/review").json["files"].arrayValue!.first { $0["path"] == .string("src/main.swift") }!
+        let before = await router.get("/api/review?ctx=3").json["files"].arrayValue!.first { $0["path"] == .string("src/main.swift") }!
         let unstagedHunk = before["hunks"].arrayValue![1]
         var stage: [String: JSON] = ["action": .string("stage-hunk"), "path": .string("src/main.swift"), "hunk": unstagedHunk]
         #expect(await router.post("/api/stage", .object(stage)).text == #"{"ok":true}"#)
-        let staged = await router.get("/api/review").json["files"].arrayValue!.first { $0["path"] == .string("src/main.swift") }!
+        let staged = await router.get("/api/review?ctx=3").json["files"].arrayValue!.first { $0["path"] == .string("src/main.swift") }!
         #expect(staged["stagedState"] == .string("full"))
         stage["action"] = .string("unstage-hunk")
         #expect(await router.post("/api/stage", .object(stage)).status == 200)
-        let partial = await router.get("/api/review").json["files"].arrayValue!.first { $0["path"] == .string("src/main.swift") }!
+        let partial = await router.get("/api/review?ctx=3").json["files"].arrayValue!.first { $0["path"] == .string("src/main.swift") }!
         #expect(partial["stagedState"] == .string("partial"))
 
         var file: [String: JSON] = ["action": .string("unstage-file"), "path": .string("src/main.swift")]
         #expect(await router.post("/api/stage", .object(file)).status == 200)
-        let none = await router.get("/api/review").json["files"].arrayValue!.first { $0["path"] == .string("src/main.swift") }!
+        let none = await router.get("/api/review?ctx=3").json["files"].arrayValue!.first { $0["path"] == .string("src/main.swift") }!
         #expect(none["stagedState"] == .string("none"))
         file["action"] = .string("stage-file")
         #expect(await router.post("/api/stage", .object(file)).status == 200)
