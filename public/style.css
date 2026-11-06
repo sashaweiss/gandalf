@@ -23,6 +23,8 @@
   --ctx-num: #8c959f;
   --gap-bg: #eef1f4;
   --gap-text: #9a6700;
+  --gap-tint: #e3effb;
+  --gap-edge: #6f9fd8;
   --sel-bg: #fff8c5;
   --blank-bg: #f0f2f5;
   --comment-bg: #fffbe6;
@@ -57,6 +59,8 @@
     --ctx-num: #6e7681;
     --gap-bg: #1c2128;
     --gap-text: #d4a72c;
+    --gap-tint: #15233a;
+    --gap-edge: #3d6bb3;
     --sel-bg: #3a3000;
     --blank-bg: #10151b;
     --comment-bg: #2a2410;
@@ -766,8 +770,10 @@ button.hh-btn:hover, button.file-act:hover { color: var(--accent); border-color:
 
 /* gap (hidden context) rows */
 tr.gap td {
-  background: var(--gap-bg);
-  padding: 2px 10px;
+  background: var(--gap-tint);
+  border-top: 1px dashed var(--gap-edge);
+  border-bottom: 1px dashed var(--gap-edge);
+  padding: 5px 10px;
   font-size: 12.5px;
   color: var(--gap-text);
 }
@@ -783,6 +789,7 @@ tr.gap button {
 }
 tr.gap button:hover { border-color: var(--gap-text); }
 tr.gap .gap-count { color: var(--muted); }
+tr.gap + tr.hunk-head td { border-top: none; }
 
 /* ---- comments ---- */
 tr.crow > td { padding: 6px 8px 6px 46px; background: var(--panel); }
