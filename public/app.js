@@ -1071,11 +1071,14 @@ function setActiveFile(path) {
 }
 
 function jumpToFile(path) {
-  const sec = fileSections.get(path);
-  if (!sec) return;
-  // Fold state is the reviewer's; jumping to a file never changes it. The
-  // card's scroll-margin clears the sticky topbar.
-  sec.scrollIntoView({ block: 'start' });
+  if (!fileSections.has(path)) return;
+  const ui = getUI(path);
+  if (ui.collapsed) {
+    ui.collapsed = false; // fold only — expansions survive
+    renderFile(path);
+  }
+  // The card's scroll-margin clears the sticky topbar.
+  fileSections.get(path).scrollIntoView({ block: 'start' });
   setActiveFile(path);
 }
 
