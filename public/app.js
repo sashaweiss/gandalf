@@ -405,46 +405,37 @@ function threadHtml(c, comments, ui, readOnly) {
   return `<div class="thread">${parts.join('')}</div>`;
 }
 
-// highlight.js is a separate script; guarded so the headless test harness can
-// load app.js on its own.
-const HL = typeof Highlight === 'undefined' ? null : Highlight;
+// syntax.js is a separate script; guarded so the headless test harness can load app.js on its
+// own.
+const SYN = typeof Syntax === 'undefined' ? null : Syntax;
 
-function tokensHtml(tokens) {
-  let h = '';
-  for (const tok of tokens) {
-    h += tok.t === 'plain' ? esc(tok.s) : `<span class="tok-${tok.t}">${esc(tok.s)}</span>`;
-  }
-  return h;
-}
-
-// Per-file highlighter for rows in display order. Old and new sides are
-// separate documents, so each gets its own carry (a deleted `/*` must not
-// bleed comment state into the lines that replaced it); context lines belong
-// to both. Hidden context (an unexpanded gap) breaks the carries.
-function makeHighlighter(path) {
-  const spec = HL && HL.specForPath(path);
-  if (!spec) return null;
-  let carryOld = null;
-  let carryNew = null;
-  return {
-    reset() { carryOld = null; carryNew = null; },
-    html(r) {
-      if (r.t === 'del') {
-        const res = HL.tokenizeLine(spec, r.text, carryOld);
-        carryOld = res.carry;
-        return tokensHtml(res.tokens);
-      }
-      if (r.t === 'add') {
-        const res = HL.tokenizeLine(spec, r.text, carryNew);
-        carryNew = res.carry;
-        return tokensHtml(res.tokens);
-      }
-      carryOld = HL.tokenizeLine(spec, r.text, carryOld).carry;
-      const res = HL.tokenizeLine(spec, r.text, carryNew);
-      carryNew = res.carry;
-      return tokensHtml(res.tokens);
-    },
+// Highlighted HTML for a file's line rows, by row. Old and new sides are separate documents (a
+// deleted `/*` must not turn the lines that replaced it into a comment), highlighted one stretch
+// of consecutive lines at a time; a gap (hidden context) ends a stretch. Context lines belong to
+// both sides and show the new side's highlighting.
+function highlightRows(path, rows) {
+  const language = SYN && SYN.languageForPath(path);
+  if (!language) return null;
+  const html = new Map();
+  let oldRows = [];
+  let newRows = [];
+  const flush = () => {
+    for (const side of [oldRows, newRows]) {
+      if (!side.length) continue;
+      const lines = SYN.highlightLines(language, side.map((r) => r.text));
+      side.forEach((r, i) => html.set(r, lines[i]));
+    }
+    oldRows = [];
+    newRows = [];
   };
+  for (const r of rows) {
+    if (r.kind === 'gap') { flush(); continue; }
+    if (r.kind !== 'line') continue;
+    if (r.t !== 'add') oldRows.push(r);
+    if (r.t !== 'del') newRows.push(r);
+  }
+  flush();
+  return html;
 }
 
 function lineRowHtml(r, covered, readOnly, codeHtml) {
@@ -604,7 +595,7 @@ function buildFileSection(file, comments, ui, opts) {
       const anchors = commentsByAnchor(comments, oldKey);
       const covered = coverageSet(comments, oldKey);
       const rendered = new Set();
-      const hl = makeHighlighter(file.path);
+      const hl = highlightRows(file.path, rows);
       // Split declares its columns up front: with `table-layout: fixed` the two
       // sides stay exactly equal, so the divider is centred and content can
       // never widen a column (rows that span the table would otherwise decide
@@ -622,21 +613,19 @@ function buildFileSection(file, comments, ui, opts) {
         : '';
       parts.push(`<div class="diff-wrap"><table class="diff${split ? ' split' : ''}">${colgroup}<tbody>`);
       for (const u of split ? pairRows(rows) : rows) {
-        if (u.kind === 'gap') { if (hl) hl.reset(); parts.push(gapRowHtml(u, readOnly, cols)); continue; }
+        if (u.kind === 'gap') { parts.push(gapRowHtml(u, readOnly, cols)); continue; }
         if (u.kind === 'hunkhead') { parts.push(hunkHeadHtml(file, u, readOnly, cols)); continue; }
         // A unified row shows one line; a split row shows a deletion beside
         // its replacement, or the same context line in both columns. Threads
         // and the open form go under whichever row holds their line.
         let lineRows;
         if (u.kind === 'pair') {
-          // Each side keeps its own highlighter carry, so alternating between
-          // the columns still feeds each side its own lines in order.
-          const hL = hl && u.left ? hl.html(u.left) : null;
-          const hR = hl && u.right ? (u.right === u.left ? hL : hl.html(u.right)) : null;
+          const hL = hl && u.left ? hl.get(u.left) : null;
+          const hR = hl && u.right ? hl.get(u.right) : null;
           parts.push(pairRowHtml(u, covered, readOnly, hL, hR));
           lineRows = (u.left === u.right ? [u.left] : [u.left, u.right]).filter(Boolean);
         } else {
-          parts.push(lineRowHtml(u, covered, readOnly, hl && hl.html(u)));
+          parts.push(lineRowHtml(u, covered, readOnly, hl && hl.get(u)));
           lineRows = [u];
         }
         for (const r of lineRows) {

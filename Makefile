@@ -16,7 +16,7 @@ test:
 	swift test --package-path GandalfServer
 	node --check public/app.js
 	node tests/test_buildrows.js
-	node tests/test_highlight.js
+	node tests/test_syntax.js
 	node tests/test_filetree.js
 
 # Set VERBOSE (e.g., `make release VERBOSE=1`) to show each step's output.

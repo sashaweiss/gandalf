@@ -690,13 +690,16 @@ td.num {
 td.sign { width: 18px; min-width: 18px; text-align: center; user-select: none; color: var(--muted); }
 td.code { white-space: pre-wrap; word-break: break-all; padding-right: 8px; width: 100%; }
 
-.tok-kw { color: var(--tok-kw); }
-.tok-str { color: var(--tok-str); }
-.tok-com { color: var(--tok-com); font-style: italic; }
-.tok-num { color: var(--tok-num); }
-.tok-type { color: var(--tok-type); }
-.tok-attr { color: var(--tok-attr); }
-.tok-int { color: var(--tok-attr); }
+.hljs-keyword, .hljs-selector-tag, .hljs-bullet, .hljs-section { color: var(--tok-kw); }
+.hljs-string, .hljs-regexp, .hljs-code, .hljs-symbol { color: var(--tok-str); }
+.hljs-comment, .hljs-quote { color: var(--tok-com); font-style: italic; }
+.hljs-number, .hljs-literal { color: var(--tok-num); }
+.hljs-type, .hljs-built_in, .hljs-title.class_ { color: var(--tok-type); }
+.hljs-meta, .hljs-attr, .hljs-attribute, .hljs-link, .hljs-name, .hljs-selector-class,
+.hljs-selector-id { color: var(--tok-attr); }
+.hljs-subst { color: var(--text); }
+.hljs-section, .hljs-strong { font-weight: 600; }
+.hljs-emphasis { font-style: italic; }
 
 tr.add { background: var(--add-bg); }
 tr.add td.num { background: var(--add-num-bg); color: var(--text); }

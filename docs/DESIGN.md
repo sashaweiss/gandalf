@@ -19,7 +19,8 @@ code.
   file needs an entry in `uiFiles` in `Router.swift`; a test enforces it.
   UI changes need a rebuild.
 - `tests/` — node tests for the pure parts of `app.js` (row building, split
-  pairing, selection anchoring, file tree) and `highlight.js`.
+  pairing, selection anchoring, file tree) and `syntax.js`.
+- `vendor/` — licenses for third-party code vendored into `public/`.
 - `GandalfRelease/` — `gandalf-release`, which tests, builds, signs,
   notarizes, tags `v<version>`, and drafts a GitHub release. macOS only.
 - `gandalf` — symlink to the release build, for running from a checkout.
@@ -30,7 +31,7 @@ code.
 (cd GandalfServer && swift build -c release && swift test)
 node --check public/app.js
 node tests/test_buildrows.js
-node tests/test_highlight.js
+node tests/test_syntax.js
 node tests/test_filetree.js
 ```
 
@@ -43,7 +44,8 @@ Firefox via `geckodriver`.
 Ask before relaxing any of these.
 
 - **Apple-only dependencies** for the server (SwiftNIO, Argument Parser,
-  Crypto); no npm, CDN, or web fonts. Builds on macOS and Linux.
+  Crypto); no npm, CDN, or web fonts. Builds on macOS and Linux. The one
+  third-party UI dependency is highlight.js, vendored (see Highlighting).
 - **No network.** Binds `127.0.0.1`; strict CSP in `index.html` (so no
   inline styles); Host and Origin checks against DNS rebinding and
   cross-site requests.
@@ -131,9 +133,19 @@ now, and commit-pinned comments get their own sections.
 Detached HEAD uses `detached-<sha>`. Writes are atomic, under a process-wide
 lock.
 
+## Highlighting
+
+`public/highlight.min.js` is highlight.js's prebuilt "common" bundle, vendored
+unmodified apart from a header comment (version, source, how to update); its
+license is in `vendor/highlight.js/`. `syntax.js` wraps it: languages come
+from hljs's own extension aliases plus a few extras (`.m`, `Makefile`). Each
+side of each visible stretch of a diff is highlighted as one document, then
+split back into lines. We only call `hljs.highlight`, which is pure string
+work; never `highlightAll` or the other DOM helpers.
+
 ## Known limits
 
 - The staleness fingerprint doesn't hash untracked files' contents.
-- Highlighting is line-by-line, so a hunk starting inside a block comment or
-  multiline string renders plain until it closes.
+- Highlighting can't see past the visible lines, so a hunk starting inside a
+  block comment, multiline string, or fenced code block is misread.
 - Identical duplicate hunks can confuse the per-hunk staged badge.
