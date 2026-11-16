@@ -7,7 +7,7 @@ IDENTITY := release-identity.json
 
 .PHONY: all build test release
 
-all: build test
+all: test build
 
 build:
 	swift build --package-path GandalfServer -c release
