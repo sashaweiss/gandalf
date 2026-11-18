@@ -20,6 +20,8 @@
   --add-num-bg: #aceebb;
   --del-bg: #ffebe9;
   --del-num-bg: #ffcecb;
+  --add-word-bg: #aceebb;
+  --del-word-bg: #ffcecb;
   --ctx-num: #8c959f;
   --gap-bg: #eef1f4;
   --gap-text: #9a6700;
@@ -56,6 +58,8 @@
     --add-num-bg: #1b4332;
     --del-bg: #2d1517;
     --del-num-bg: #552527;
+    --add-word-bg: #2b6a3f;
+    --del-word-bg: #7d2e31;
     --ctx-num: #6e7681;
     --gap-bg: #1c2128;
     --gap-text: #d4a72c;
@@ -725,6 +729,9 @@ td.num.s-add { background: var(--add-num-bg); color: var(--text); }
 td.s-del { background: var(--del-bg); }
 td.num.s-del { background: var(--del-num-bg); color: var(--text); }
 td.blank { background: var(--blank-bg); }
+mark.wd { color: inherit; border-radius: 2px; }
+tr.add mark.wd, td.s-add mark.wd { background: var(--add-word-bg); }
+tr.del mark.wd, td.s-del mark.wd { background: var(--del-word-bg); }
 td.code.commented { box-shadow: inset 3px 0 0 var(--comment-border); }
 td.selrange { background: var(--sel-bg) !important; }
 

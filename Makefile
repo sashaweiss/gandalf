@@ -17,6 +17,7 @@ test:
 	node --check public/app.js
 	node tests/test_buildrows.js
 	node tests/test_syntax.js
+	node tests/test_worddiff.js
 	node tests/test_filetree.js
 
 # Set VERBOSE (e.g., `make release VERBOSE=1`) to show each step's output.

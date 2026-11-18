@@ -65,6 +65,7 @@ let uiFiles: [String: Data] = [
     "app.js": Data(PackageResources.app_js),
     "highlight.min.js": Data(PackageResources.highlight_min_js),
     "syntax.js": Data(PackageResources.syntax_js),
+    "worddiff.js": Data(PackageResources.worddiff_js),
     "favicon.svg": Data(PackageResources.favicon_svg),
 ]
 

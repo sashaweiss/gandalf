@@ -438,6 +438,28 @@ function highlightRows(path, rows) {
   return html;
 }
 
+const WD = typeof WordDiff === 'undefined' ? null : WordDiff;
+
+// Code HTML for a file's line rows, by row: syntax highlighting, plus word-level marks on each
+// deleted line and the added line paired with it (positionally within a change block, as in
+// `pairRows`).
+function codeHtmlRows(path, rows) {
+  const hl = highlightRows(path, rows);
+  const html = new Map();
+  for (const r of rows) {
+    if (r.kind === 'line') html.set(r, (hl && hl.get(r)) ?? esc(r.text));
+  }
+  if (!WD) return html;
+  for (const pair of pairRows(rows)) {
+    if (pair.kind !== 'pair' || !pair.left || !pair.right || pair.left === pair.right) continue;
+    const ranges = WD.changedRanges(pair.left.text, pair.right.text);
+    if (!ranges) continue;
+    html.set(pair.left, WD.markRanges(html.get(pair.left), ranges.a));
+    html.set(pair.right, WD.markRanges(html.get(pair.right), ranges.b));
+  }
+  return html;
+}
+
 function lineRowHtml(r, covered, readOnly, codeHtml) {
   const cls = r.t === 'add' ? 'add' : r.t === 'del' ? 'del' : 'ctx';
   const isCov = (r.new != null && covered.has('new:' + r.new)) ||
@@ -595,7 +617,7 @@ function buildFileSection(file, comments, ui, opts) {
       const anchors = commentsByAnchor(comments, oldKey);
       const covered = coverageSet(comments, oldKey);
       const rendered = new Set();
-      const hl = highlightRows(file.path, rows);
+      const hl = codeHtmlRows(file.path, rows);
       // Split declares its columns up front: with `table-layout: fixed` the two
       // sides stay exactly equal, so the divider is centred and content can
       // never widen a column (rows that span the table would otherwise decide
@@ -620,12 +642,12 @@ function buildFileSection(file, comments, ui, opts) {
         // and the open form go under whichever row holds their line.
         let lineRows;
         if (u.kind === 'pair') {
-          const hL = hl && u.left ? hl.get(u.left) : null;
-          const hR = hl && u.right ? hl.get(u.right) : null;
+          const hL = u.left ? hl.get(u.left) : null;
+          const hR = u.right ? hl.get(u.right) : null;
           parts.push(pairRowHtml(u, covered, readOnly, hL, hR));
           lineRows = (u.left === u.right ? [u.left] : [u.left, u.right]).filter(Boolean);
         } else {
-          parts.push(lineRowHtml(u, covered, readOnly, hl && hl.get(u)));
+          parts.push(lineRowHtml(u, covered, readOnly, hl.get(u)));
           lineRows = [u];
         }
         for (const r of lineRows) {
