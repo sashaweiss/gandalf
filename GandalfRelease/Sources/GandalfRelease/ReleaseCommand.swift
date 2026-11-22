@@ -17,8 +17,8 @@ struct ReleaseCommand: AsyncParsableCommand {
         abstract: "Builds, signs, notarizes, and publishes a release of gandalf.",
         discussion: """
             The version comes from GandalfServer/Sources/gandalf/Version.swift. \
-            The release is tagged v<version>, and published to GitHub as a \
-            draft. Builds and artifacts go in release/.
+            The release is tagged v<version>, and published to GitHub. Builds \
+            and artifacts go in release/.
             """,
     )
 
@@ -110,7 +110,7 @@ struct ReleaseCommand: AsyncParsableCommand {
             repository: repository,
             remote: remote,
         )
-        print("Created a draft release, \(tag); review and publish it on GitHub.")
+        print("Published the release, \(tag), on GitHub.")
     }
 
     /// A signed, notarized build of gandalf for one architecture, as
@@ -181,7 +181,7 @@ struct ReleaseCommand: AsyncParsableCommand {
     }
 
     /// Tags the release `tag`, pushes the tag to `remote`, and creates a
-    /// draft GitHub release of `artifacts`.
+    /// GitHub release of `artifacts`.
     func publish(
         artifacts: [Artifact],
         version: String,
@@ -201,7 +201,7 @@ struct ReleaseCommand: AsyncParsableCommand {
             verbose: verbose,
         )
 
-        log("Creating a draft GitHub release")
+        log("Creating a GitHub release")
         let files = artifacts.flatMap { artifact in
             [artifact.zip.path, artifact.checksum.path]
         }
@@ -209,7 +209,6 @@ struct ReleaseCommand: AsyncParsableCommand {
             ["gh", "release", "create", tag]
                 + files
                 + [
-                    "--draft",
                     "--title",
                     "\(tag)",
                     "--generate-notes",

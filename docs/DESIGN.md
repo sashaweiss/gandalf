@@ -22,7 +22,7 @@ code.
   pairing, selection anchoring, file tree) and `syntax.js`.
 - `vendor/` — licenses for third-party code vendored into `public/`.
 - `GandalfRelease/` — `gandalf-release`, which tests, builds, signs,
-  notarizes, tags `v<version>`, and drafts a GitHub release. macOS only.
+  notarizes, tags `v<version>`, and publishes a GitHub release. macOS only.
 - `gandalf` — symlink to the release build, for running from a checkout.
 
 ## Checks
