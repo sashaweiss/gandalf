@@ -243,6 +243,7 @@ struct ReleaseCommand: AsyncParsableCommand {
         let directories = path.split(separator: ":").map(String.init)
         let tools = [
             "git",
+            "make",
             "swift",
             "node",
             "lipo",
@@ -343,32 +344,14 @@ struct ReleaseCommand: AsyncParsableCommand {
         }
     }
 
-    /// Runs the server's Swift tests, building in `buildDirectory`, and the
-    /// UI's JavaScript checks.
+    /// Runs `make test`, building the server's Swift tests in
+    /// `buildDirectory`.
     func test(repository: URL, buildDirectory: URL) async throws {
         try await runCommand(
-            [
-                "swift",
-                "test",
-                "--scratch-path",
-                buildDirectory.path,
-            ],
-            directory: repository.appending(path: "GandalfServer"),
+            ["make", "test", "SCRATCH=\(buildDirectory.path)"],
+            directory: repository,
             verbose: verbose,
         )
-        let scripts = [
-            ["--check", "public/app.js"],
-            ["tests/test_buildrows.js"],
-            ["tests/test_highlight.js"],
-            ["tests/test_filetree.js"],
-        ]
-        for arguments in scripts {
-            try await runCommand(
-                ["node"] + arguments,
-                directory: repository,
-                verbose: verbose,
-            )
-        }
     }
 
     /// Builds gandalf for release in `buildDirectory`, and returns the binary.

@@ -12,8 +12,12 @@ all: test build
 build:
 	swift build --package-path GandalfServer -c release
 
+# Set SCRATCH to build the Swift tests somewhere other than .build.
+SCRATCH :=
+
 test:
-	swift test --package-path GandalfServer
+	swift test --package-path GandalfServer \
+		$(if $(SCRATCH),--scratch-path "$(SCRATCH)")
 	node --check public/app.js
 	node tests/test_buildrows.js
 	node tests/test_syntax.js
